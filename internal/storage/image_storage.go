@@ -36,7 +36,11 @@ func (s *Store) SaveBytes(data []byte, ext string) (string, error) {
 	if len(ext) > 0 && ext[0] != '.' {
 		ext = "." + ext
 	}
-	name := randomHex(16) + ext
+	name, err := randomHex(16)
+	if err != nil {
+		return "", err
+	}
+	name += ext
 	path := filepath.Join(s.localPath, name)
 
 	if err := os.WriteFile(path, data, 0644); err != nil {
@@ -75,8 +79,10 @@ func (s *Store) LocalPath() string {
 	return s.localPath
 }
 
-func randomHex(n int) string {
+func randomHex(n int) (string, error) {
 	b := make([]byte, n)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("storage: rand.Read: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }

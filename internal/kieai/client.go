@@ -64,7 +64,8 @@ func (c *Client) CreateTask(ctx context.Context, apiKey string, req *model.KieAI
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	const maxRespSize = 1 << 20 // 1MB
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRespSize))
 	if err != nil {
 		return "", fmt.Errorf("kieai: read createTask response: %w", err)
 	}
@@ -100,7 +101,8 @@ func (c *Client) GetTaskStatus(ctx context.Context, apiKey, taskID string) (*mod
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	const maxRespSize = 1 << 20 // 1MB
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRespSize))
 	if err != nil {
 		return nil, fmt.Errorf("kieai: read recordInfo response: %w", err)
 	}
