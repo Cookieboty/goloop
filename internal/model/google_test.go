@@ -75,6 +75,12 @@ func TestGoogleResponseMarshal(t *testing.T) {
 	if check.Candidates[0].FinishReason != "STOP" {
 		t.Errorf("finishReason mismatch")
 	}
+	if check.Candidates[0].Content.Parts[1].InlineData == nil {
+		t.Error("InlineData part lost in round-trip")
+	}
+	if check.Candidates[0].Content.Parts[1].InlineData.Data != "base64data" {
+		t.Errorf("InlineData.Data mismatch: %q", check.Candidates[0].Content.Parts[1].InlineData.Data)
+	}
 }
 
 func TestGoogleErrorMarshal(t *testing.T) {
