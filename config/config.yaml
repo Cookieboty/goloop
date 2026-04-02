@@ -1,0 +1,36 @@
+server:
+  port: 8080
+  read_timeout: 130s
+  write_timeout: 130s
+
+kieai:
+  base_url: https://api.kie.ai
+  timeout: 120s
+
+poller:
+  initial_interval: 2s
+  max_interval: 10s
+  max_wait_time: 120s
+  retry_attempts: 3
+
+storage:
+  type: local
+  local_path: /tmp/images
+  base_url: http://localhost:8080/images
+
+model_mapping:
+  gemini-3.1-flash-image-preview:
+    kieai_model: nano-banana-2
+    aspect_ratio: "1:1"
+    resolution: "1K"
+    output_format: png
+  gemini-3-pro-image-preview:
+    kieai_model: nano-banana-pro
+    aspect_ratio: "1:1"
+    resolution: "2K"
+    output_format: png
+  gemini-2.5-flash-image:
+    kieai_model: google/nano-banana
+    aspect_ratio: "1:1"
+    resolution: "1K"
+    output_format: png
