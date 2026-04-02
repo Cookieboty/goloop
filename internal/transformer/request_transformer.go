@@ -36,7 +36,7 @@ func (t *RequestTransformer) Transform(ctx context.Context, req *model.GoogleReq
 		return nil, fmt.Errorf("transformer: unknown model %q", googleModel)
 	}
 
-	prompt, imageURLs, err := t.extractPartsContent(ctx, req)
+	prompt, imageURLs, err := t.extractPartsContent(req)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ func (t *RequestTransformer) Transform(ctx context.Context, req *model.GoogleReq
 	}, nil
 }
 
-func (t *RequestTransformer) extractPartsContent(ctx context.Context, req *model.GoogleRequest) (string, []string, error) {
+func (t *RequestTransformer) extractPartsContent(req *model.GoogleRequest) (string, []string, error) {
 	var textParts []string
 	var imageURLs []string
 
@@ -96,7 +96,11 @@ func (t *RequestTransformer) extractPartsContent(ctx context.Context, req *model
 			}
 
 			if part.FileData != nil && part.FileData.FileURI != "" {
-				imageURLs = append(imageURLs, part.FileData.FileURI)
+				uri := part.FileData.FileURI
+				if !strings.HasPrefix(uri, "https://") {
+					return "", nil, fmt.Errorf("transformer: FileData.FileURI must use https scheme: %q", uri)
+				}
+				imageURLs = append(imageURLs, uri)
 			}
 		}
 	}
@@ -105,6 +109,13 @@ func (t *RequestTransformer) extractPartsContent(ctx context.Context, req *model
 }
 
 func (t *RequestTransformer) saveInlineData(data *model.InlineData) (string, error) {
+	// Pre-check: base64 encodes ~4/3 of raw size. 30MB decoded → ~40.96MB base64.
+	// Reject early to avoid allocating a huge buffer.
+	const maxBase64Len = 40*1024*1024 + 1024 // 40MB + margin
+	if len(data.Data) > maxBase64Len {
+		return "", fmt.Errorf("base64 payload too large before decode (%d bytes)", len(data.Data))
+	}
+
 	raw, err := base64.StdEncoding.DecodeString(data.Data)
 	if err != nil {
 		// Try URL-safe base64 as fallback

@@ -2,6 +2,7 @@
 package storage
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -51,8 +52,13 @@ func (s *Store) SaveBytes(data []byte, ext string) (string, error) {
 }
 
 // DownloadToBytes fetches a URL and returns the raw bytes (max 30MB).
-func (s *Store) DownloadToBytes(url string) ([]byte, error) {
-	resp, err := s.httpClient.Get(url)
+// The request is cancelled when ctx is done.
+func (s *Store) DownloadToBytes(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("storage: build request %q: %w", url, err)
+	}
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("storage: download %q: %w", url, err)
 	}

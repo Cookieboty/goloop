@@ -3,7 +3,10 @@
     "allow": [
       "Read(//Users/botycookie/.claude/**)",
       "Bash(python3 -c \"import json,sys; data=json.load\\(sys.stdin\\); print\\(data[0][''''text'''']\\)\")",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(go test:*)",
+      "Bash(go build:*)",
+      "Bash(go version:*)"
     ]
   }
 }

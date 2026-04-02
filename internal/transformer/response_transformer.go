@@ -41,7 +41,7 @@ func (t *ResponseTransformer) ToGoogleResponse(ctx context.Context, resultURLs [
 		wg.Add(1)
 		go func(idx int, u string) {
 			defer wg.Done()
-			data, err := t.store.DownloadToBytes(u)
+			data, err := t.store.DownloadToBytes(ctx, u)
 			ch <- result{idx: idx, data: data, err: err}
 		}(i, url)
 	}

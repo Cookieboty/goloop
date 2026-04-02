@@ -2,6 +2,7 @@
 package storage
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -51,7 +52,7 @@ func TestDownloadToBytes(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := NewStore(dir, "http://localhost:8080/images")
 
-	data, err := store.DownloadToBytes(srv.URL + "/img.png")
+	data, err := store.DownloadToBytes(context.Background(), srv.URL+"/img.png")
 	if err != nil {
 		t.Fatalf("DownloadToBytes error: %v", err)
 	}
@@ -69,7 +70,7 @@ func TestDownloadToBytes_HTTPError(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := NewStore(dir, "http://localhost:8080/images")
 
-	_, err := store.DownloadToBytes(srv.URL + "/missing.png")
+	_, err := store.DownloadToBytes(context.Background(), srv.URL+"/missing.png")
 	if err == nil {
 		t.Error("expected error for HTTP 404, got nil")
 	}

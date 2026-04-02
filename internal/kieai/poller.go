@@ -41,10 +41,12 @@ func (p *Poller) Poll(ctx context.Context, apiKey, taskID string) (*model.KieAIR
 			return nil, fmt.Errorf("poller: task %q timed out after %v", taskID, p.cfg.MaxWaitTime)
 		}
 
+		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return nil, ctx.Err()
-		case <-time.After(interval):
+		case <-timer.C:
 		}
 
 		pollCount++
