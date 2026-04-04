@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"goloop/internal/config"
 	"goloop/internal/kieai"
 	"goloop/internal/model"
+	"goloop/internal/security"
 	"goloop/internal/storage"
 	"goloop/internal/transformer"
 )
@@ -31,6 +33,13 @@ func setupIntegrationTest(t *testing.T, kieaiHandler http.Handler, cdnResultURL 
 		t.Fatal(err)
 	}
 
+	// For tests, use HTTP client that skips TLS verification
+	store.SetHTTPClient(&http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	})
+
 	modelMapping := map[string]config.ModelDefaults{
 		"gemini-3.1-flash-image-preview": {
 			KieAIModel: "nano-banana-2", AspectRatio: "1:1", Resolution: "1K", OutputFormat: "png",
@@ -40,24 +49,28 @@ func setupIntegrationTest(t *testing.T, kieaiHandler http.Handler, cdnResultURL 
 	reqTr := transformer.NewRequestTransformer(store, modelMapping)
 	respTr := transformer.NewResponseTransformer(store)
 	client := kieai.NewClient(kieaiSrv.URL, 10*time.Second)
-	poller := kieai.NewPoller(client, kieai.PollerConfig{
+	taskManager := kieai.NewTaskManager(client, kieai.PollerConfig{
 		InitialInterval: 10 * time.Millisecond,
 		MaxInterval:     30 * time.Millisecond,
 		MaxWaitTime:     5 * time.Second,
 		RetryAttempts:   3,
-	})
+	}, 2) // 2 workers for test
+	t.Cleanup(taskManager.Stop)
 
-	h := NewGeminiHandler(reqTr, respTr, client, poller)
+	h := NewGeminiHandler(reqTr, respTr, client, taskManager)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	return mux
 }
 
 func TestIntegration_TextToImage_Success(t *testing.T) {
+	security.SetTestMode(true)
+	defer security.SetTestMode(false)
+
 	var pollCount atomic.Int32
 
-	// CDN server serves fake PNG bytes
-	cdnSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// CDN server serves fake PNG bytes (use HTTPS for SSRF protection)
+	cdnSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		w.Write([]byte("\x89PNG\r\n\x1a\n")) // minimal PNG header
 	}))
@@ -76,11 +89,11 @@ func TestIntegration_TextToImage_Success(t *testing.T) {
 		n := pollCount.Add(1)
 		var resp model.KieAIRecordInfoResponse
 		if n < 2 {
-			resp.Data = model.KieAIRecordData{Status: "generating"}
+			resp.Data = model.KieAIRecordData{State: "generating"}
 		} else {
 			resp.Data = model.KieAIRecordData{
-				Status:     "success",
-				ResultJSON: &model.KieAIResult{ResultURLs: []string{resultURL}},
+				State:         "success",
+				ResultJSONRaw: `{"resultUrls":["` + resultURL + `"]}`,
 			}
 		}
 		json.NewEncoder(w).Encode(resp)

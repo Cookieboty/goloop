@@ -61,7 +61,6 @@ func TestCreateTask_HTTPError(t *testing.T) {
 }
 
 func TestGetTaskStatus_Success(t *testing.T) {
-	resultURLs := []string{"https://cdn.kie.ai/output/img1.png", "https://cdn.kie.ai/output/img2.png"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("taskId") != "task-xyz" {
 			t.Errorf("taskId param missing")
@@ -69,9 +68,9 @@ func TestGetTaskStatus_Success(t *testing.T) {
 		json.NewEncoder(w).Encode(model.KieAIRecordInfoResponse{
 			Code: 200,
 			Data: model.KieAIRecordData{
-				TaskID: "task-xyz",
-				Status: "success",
-				ResultJSON: &model.KieAIResult{ResultURLs: resultURLs},
+				TaskID:        "task-xyz",
+				State:         "success",
+				ResultJSONRaw: `{"resultUrls":["https://cdn.kie.ai/output/img1.png","https://cdn.kie.ai/output/img2.png"]}`,
 			},
 		})
 	}))
@@ -82,10 +81,10 @@ func TestGetTaskStatus_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTaskStatus error: %v", err)
 	}
-	if record.Status != "success" {
-		t.Errorf("status: got %q", record.Status)
+	if record.State != "success" {
+		t.Errorf("state: got %q", record.State)
 	}
-	if len(record.ResultJSON.ResultURLs) != 2 {
-		t.Errorf("expected 2 result URLs, got %d", len(record.ResultJSON.ResultURLs))
+	if len(record.ResultJSON().ResultURLs) != 2 {
+		t.Errorf("expected 2 result URLs, got %d", len(record.ResultJSON().ResultURLs))
 	}
 }

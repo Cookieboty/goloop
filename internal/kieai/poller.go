@@ -64,9 +64,9 @@ func (p *Poller) Poll(ctx context.Context, apiKey, taskID string) (*model.KieAIR
 		}
 		consecutiveFails = 0
 
-		slog.Debug("poller: task status", "taskId", taskID, "status", record.Status, "pollCount", pollCount)
+		slog.Debug("poller: task status", "taskId", taskID, "state", record.State, "pollCount", pollCount)
 
-		switch record.Status {
+		switch record.State {
 		case "success":
 			return record, nil
 		case "fail":
@@ -78,7 +78,7 @@ func (p *Poller) Poll(ctx context.Context, apiKey, taskID string) (*model.KieAIR
 		case "waiting", "queuing", "generating":
 			// continue polling
 		default:
-			slog.Warn("poller: unknown status", "taskId", taskID, "status", record.Status)
+			slog.Warn("poller: unknown state", "taskId", taskID, "state", record.State)
 		}
 
 		// Exponential backoff

@@ -12,11 +12,20 @@ poller:
   max_interval: 10s
   max_wait_time: 120s
   retry_attempts: 3
+  worker_count: 20  # Worker Pool 并发数量
 
 storage:
   type: local
   local_path: /tmp/images
   base_url: http://localhost:8080/images
+  cleanup_interval: 1h      # 清理检查间隔
+  image_retention: 24h      # 图片保留时间
+  min_disk_space_gb: 1      # 最小磁盘空间（GB）
+
+ratelimit:
+  enabled: true
+  rps: 10          # 每秒请求数
+  burst: 20        # 突发容量
 
 model_mapping:
   gemini-3.1-flash-image-preview:
@@ -27,10 +36,15 @@ model_mapping:
   gemini-3-pro-image-preview:
     kieai_model: nano-banana-pro
     aspect_ratio: "1:1"
-    resolution: "2K"
+    resolution: "1K"
     output_format: png
   gemini-2.5-flash-image:
     kieai_model: google/nano-banana
+    aspect_ratio: "1:1"
+    resolution: "1K"
+    output_format: png
+  gemini-3.1-flash-image-edit:
+    kieai_model: google/nano-banana-edit
     aspect_ratio: "1:1"
     resolution: "1K"
     output_format: png

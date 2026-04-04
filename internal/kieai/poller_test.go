@@ -31,13 +31,13 @@ func TestPoller_SuccessAfterQueuing(t *testing.T) {
 		var resp model.KieAIRecordInfoResponse
 		if n < 3 {
 			resp = model.KieAIRecordInfoResponse{
-				Data: model.KieAIRecordData{Status: "queuing"},
+				Data: model.KieAIRecordData{State: "queuing"},
 			}
 		} else {
 			resp = model.KieAIRecordInfoResponse{
 				Data: model.KieAIRecordData{
-					Status:     "success",
-					ResultJSON: &model.KieAIResult{ResultURLs: []string{"https://cdn.kie.ai/img.png"}},
+					State:         "success",
+					ResultJSONRaw: `{"resultUrls":["https://cdn.kie.ai/img.png"]}`,
 				},
 			}
 		}
@@ -50,8 +50,8 @@ func TestPoller_SuccessAfterQueuing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Poll error: %v", err)
 	}
-	if record.Status != "success" {
-		t.Errorf("expected success, got %q", record.Status)
+	if record.State != "success" {
+		t.Errorf("expected success, got %q", record.State)
 	}
 	if callCount.Load() < 3 {
 		t.Errorf("expected at least 3 polls, got %d", callCount.Load())
@@ -62,7 +62,7 @@ func TestPoller_TaskFailed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(model.KieAIRecordInfoResponse{
 			Data: model.KieAIRecordData{
-				Status:     "fail",
+				State:      "fail",
 				FailReason: "content policy violation",
 			},
 		})
@@ -86,7 +86,7 @@ func TestPoller_TaskFailed(t *testing.T) {
 func TestPoller_Timeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(model.KieAIRecordInfoResponse{
-			Data: model.KieAIRecordData{Status: "generating"},
+			Data: model.KieAIRecordData{State: "generating"},
 		})
 	}))
 	defer srv.Close()
@@ -108,7 +108,7 @@ func TestPoller_Timeout(t *testing.T) {
 func TestPoller_ContextCancelled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(model.KieAIRecordInfoResponse{
-			Data: model.KieAIRecordData{Status: "waiting"},
+			Data: model.KieAIRecordData{State: "waiting"},
 		})
 	}))
 	defer srv.Close()

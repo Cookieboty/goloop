@@ -3,15 +3,20 @@ package transformer
 
 import (
 	"context"
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"goloop/internal/security"
 	"goloop/internal/storage"
 )
 
 func TestToGoogleResponse_MultipleImages(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	security.SetTestMode(true)
+	defer security.SetTestMode(false)
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		w.Write([]byte("fake-png"))
 	}))
@@ -19,6 +24,12 @@ func TestToGoogleResponse_MultipleImages(t *testing.T) {
 
 	dir := t.TempDir()
 	store, _ := storage.NewStore(dir, srv.URL)
+	// Use TLS client that skips verification for test
+	store.SetHTTPClient(&http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	})
 	rt := NewResponseTransformer(store)
 
 	urls := []string{srv.URL + "/img1.png", srv.URL + "/img2.png"}

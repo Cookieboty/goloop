@@ -23,20 +23,20 @@ type GeminiHandler struct {
 	reqTransformer  *transformer.RequestTransformer
 	respTransformer *transformer.ResponseTransformer
 	client          *kieai.Client
-	poller          *kieai.Poller
+	taskManager     *kieai.TaskManager
 }
 
 func NewGeminiHandler(
 	reqTransformer *transformer.RequestTransformer,
 	respTransformer *transformer.ResponseTransformer,
 	client *kieai.Client,
-	poller *kieai.Poller,
+	taskManager *kieai.TaskManager,
 ) *GeminiHandler {
 	return &GeminiHandler{
 		reqTransformer:  reqTransformer,
 		respTransformer: respTransformer,
 		client:          client,
-		poller:          poller,
+		taskManager:     taskManager,
 	}
 }
 
@@ -127,10 +127,10 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 	}
 
 	log = log.With("taskId", taskID)
-	log.Info("task created, starting poll")
+	log.Info("task created, submitting to worker pool")
 
-	// Poll until complete
-	record, err := h.poller.Poll(ctx, apiKey, taskID)
+	// Submit to worker pool for polling
+	result, err := h.taskManager.SubmitTask(ctx, apiKey, taskID)
 	if err != nil {
 		log.Error("poll failed", "err", err)
 		var tErr *kieai.TaskFailedError
@@ -144,17 +144,19 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if record.ResultJSON == nil || len(record.ResultJSON.ResultURLs) == 0 {
+	record := result.Record
+
+	if record.ResultJSON() == nil || len(record.ResultJSON().ResultURLs) == 0 {
 		log.Error("task succeeded but no result URLs")
 		gErr, httpCode := transformer.ToGoogleError(500, "no result URLs in successful task")
 		writeGoogleError(w, gErr, httpCode)
 		return
 	}
 
-	log.Info("task completed", "imageCount", len(record.ResultJSON.ResultURLs))
+	log.Info("task completed", "imageCount", len(record.ResultJSON().ResultURLs))
 
 	// Transform KIE.AI result → Google response
-	googleResp, err := h.respTransformer.ToGoogleResponse(ctx, record.ResultJSON.ResultURLs)
+	googleResp, err := h.respTransformer.ToGoogleResponse(ctx, record.ResultJSON().ResultURLs)
 	if err != nil {
 		log.Error("response transform failed", "err", err)
 		gErr, httpCode := transformer.ToGoogleError(500, err.Error())

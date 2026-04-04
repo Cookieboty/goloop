@@ -3,12 +3,15 @@ package storage
 
 import (
 	"context"
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"goloop/internal/security"
 )
 
 func TestSaveBytes(t *testing.T) {
@@ -43,7 +46,10 @@ func TestSaveBytes(t *testing.T) {
 }
 
 func TestDownloadToBytes(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	security.SetTestMode(true)
+	defer security.SetTestMode(false)
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		w.Write([]byte("png-image-data"))
 	}))
@@ -51,6 +57,10 @@ func TestDownloadToBytes(t *testing.T) {
 
 	dir := t.TempDir()
 	store, _ := NewStore(dir, "http://localhost:8080/images")
+	// Use TLS client that skips verification for test
+	store.httpClient.Transport = &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
 
 	data, err := store.DownloadToBytes(context.Background(), srv.URL+"/img.png")
 	if err != nil {
@@ -62,13 +72,20 @@ func TestDownloadToBytes(t *testing.T) {
 }
 
 func TestDownloadToBytes_HTTPError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	security.SetTestMode(true)
+	defer security.SetTestMode(false)
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 	}))
 	defer srv.Close()
 
 	dir := t.TempDir()
 	store, _ := NewStore(dir, "http://localhost:8080/images")
+	// Use TLS client that skips verification for test
+	store.httpClient.Transport = &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
 
 	_, err := store.DownloadToBytes(context.Background(), srv.URL+"/missing.png")
 	if err == nil {

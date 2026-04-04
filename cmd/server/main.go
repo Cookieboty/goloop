@@ -15,6 +15,7 @@ import (
 	"goloop/internal/config"
 	"goloop/internal/handler"
 	"goloop/internal/kieai"
+	"goloop/internal/middleware"
 	"goloop/internal/storage"
 	"goloop/internal/transformer"
 )
@@ -39,27 +40,40 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 启动磁盘清理 worker
+	cleanupCtx, cancelCleanup := context.WithCancel(context.Background())
+	defer cancelCleanup()
+	go store.StartCleanupWorker(cleanupCtx, 1*time.Hour, 24*time.Hour)
+
 	kieaiClient := kieai.NewClient(cfg.KieAI.BaseURL, cfg.KieAI.Timeout)
-	poller := kieai.NewPoller(kieaiClient, kieai.PollerConfig{
+
+	// 使用 TaskManager 替代 Poller，实现 Worker Pool 模式
+	taskManager := kieai.NewTaskManager(kieaiClient, kieai.PollerConfig{
 		InitialInterval: cfg.Poller.InitialInterval,
 		MaxInterval:     cfg.Poller.MaxInterval,
 		MaxWaitTime:     cfg.Poller.MaxWaitTime,
 		RetryAttempts:   cfg.Poller.RetryAttempts,
-	})
+	}, 20) // 20 个并发 worker
+	defer taskManager.Stop()
 
 	reqTransformer := transformer.NewRequestTransformer(store, cfg.ModelMapping)
 	respTransformer := transformer.NewResponseTransformer(store)
 
-	geminiHandler := handler.NewGeminiHandler(reqTransformer, respTransformer, kieaiClient, poller)
+	geminiHandler := handler.NewGeminiHandler(reqTransformer, respTransformer, kieaiClient, taskManager)
 	mux := http.NewServeMux()
 	geminiHandler.RegisterRoutes(mux)
 
-	// Static file server for saved images
-	mux.Handle("/images/", http.StripPrefix("/images/", http.FileServer(http.Dir(cfg.Storage.LocalPath))))
+	// 安全的图片文件服务（防止目录遍历攻击）
+	imageHandler := handler.NewImageHandler(cfg.Storage.LocalPath)
+	mux.Handle("/images/", imageHandler)
+
+	// 添加限流中间件
+	rateLimiter := middleware.NewRateLimiter(10, 20) // 每秒 10 个请求，突发 20
+	limitedHandler := rateLimiter.Middleware(mux)
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler:      mux,
+		Handler:      limitedHandler,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}

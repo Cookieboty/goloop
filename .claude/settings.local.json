@@ -6,7 +6,8 @@
       "Read(//tmp/**)",
       "Bash(go test:*)",
       "Bash(go build:*)",
-      "Bash(go version:*)"
+      "Bash(go version:*)",
+      "Bash(git remote:*)"
     ]
   }
 }

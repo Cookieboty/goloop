@@ -15,7 +15,7 @@ func TestGoogleRequestUnmarshal(t *testing.T) {
         ]}],
         "generationConfig": {
             "responseModalities": ["TEXT", "IMAGE"],
-            "imageConfig": {"aspectRatio": "16:9", "resolution": "2K", "outputFormat": "png"}
+            "imageConfig": {"aspectRatio": "16:9", "imageSize": "2K", "outputFormat": "png"}
         }
     }`
 

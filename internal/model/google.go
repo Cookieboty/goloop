@@ -36,7 +36,7 @@ type GenerationConfig struct {
 
 type ImageConfig struct {
 	AspectRatio  string `json:"aspectRatio,omitempty"`
-	Resolution   string `json:"resolution,omitempty"`
+	ImageSize    string `json:"imageSize,omitempty"`
 	OutputFormat string `json:"outputFormat,omitempty"`
 }
 

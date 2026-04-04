@@ -7,29 +7,28 @@ import (
 )
 
 func TestKieAIRecordInfoResponse_Success(t *testing.T) {
+	// KIE.AI 实际返回 resultJson 为 JSON 字符串，不是嵌套对象
 	raw := `{
         "code": 200,
         "msg": "ok",
         "data": {
             "taskId": "task-123",
-            "status": "success",
-            "resultJson": {
-                "resultUrls": ["https://cdn.example.com/img1.png", "https://cdn.example.com/img2.png"]
-            }
+            "state": "success",
+            "resultJson": "{\"resultUrls\":[\"https://cdn.example.com/img1.png\",\"https://cdn.example.com/img2.png\"]}"
         }
     }`
 	var resp KieAIRecordInfoResponse
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if resp.Data.Status != "success" {
-		t.Errorf("status mismatch: %q", resp.Data.Status)
+	if resp.Data.State != "success" {
+		t.Errorf("state mismatch: %q", resp.Data.State)
 	}
-	if resp.Data.ResultJSON == nil {
+	if resp.Data.ResultJSON() == nil {
 		t.Fatal("resultJson should not be nil on success")
 	}
-	if len(resp.Data.ResultJSON.ResultURLs) != 2 {
-		t.Errorf("expected 2 result URLs, got %d", len(resp.Data.ResultJSON.ResultURLs))
+	if len(resp.Data.ResultJSON().ResultURLs) != 2 {
+		t.Errorf("expected 2 result URLs, got %d", len(resp.Data.ResultJSON().ResultURLs))
 	}
 }
 
@@ -39,17 +38,17 @@ func TestKieAIRecordInfoResponse_InProgress(t *testing.T) {
         "msg": "ok",
         "data": {
             "taskId": "task-456",
-            "status": "generating"
+            "state": "generating"
         }
     }`
 	var resp KieAIRecordInfoResponse
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if resp.Data.Status != "generating" {
-		t.Errorf("status mismatch: %q", resp.Data.Status)
+	if resp.Data.State != "generating" {
+		t.Errorf("state mismatch: %q", resp.Data.State)
 	}
-	if resp.Data.ResultJSON != nil {
+	if resp.Data.ResultJSON() != nil {
 		t.Error("resultJson should be nil when in progress")
 	}
 }

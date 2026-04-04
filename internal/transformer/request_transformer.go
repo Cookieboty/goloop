@@ -9,13 +9,17 @@ import (
 
 	"goloop/internal/config"
 	"goloop/internal/model"
+	"goloop/internal/security"
 	"goloop/internal/storage"
 )
 
 const (
-	maxPromptLen  = 20000
-	maxImageCount = 14
-	maxImageBytes = 30 * 1024 * 1024 // 30MB
+	maxPromptLen      = 20000
+	maxPromptLenEdit  = 5000
+	maxImageCount     = 14
+	maxImageCountEdit = 10
+	maxImageBytes     = 30 * 1024 * 1024 // 30MB
+	maxImageBytesEdit = 10 * 1024 * 1024 // 10MB for edit model
 )
 
 // RequestTransformer converts Google API requests to KIE.AI requests.
@@ -41,33 +45,75 @@ func (t *RequestTransformer) Transform(ctx context.Context, req *model.GoogleReq
 		return nil, err
 	}
 
-	if len([]rune(prompt)) > maxPromptLen {
-		return nil, fmt.Errorf("transformer: prompt exceeds %d characters", maxPromptLen)
+	// Check if this is an edit model
+	isEditModel := strings.Contains(defaults.KieAIModel, "edit")
+
+	// Validate prompt length based on model type
+	maxPrompt := maxPromptLen
+	if isEditModel {
+		maxPrompt = maxPromptLenEdit
+	}
+	if len([]rune(prompt)) > maxPrompt {
+		return nil, fmt.Errorf("transformer: prompt exceeds %d characters", maxPrompt)
 	}
 
-	if len(imageURLs) > maxImageCount {
-		return nil, fmt.Errorf("transformer: too many images: %d > %d", len(imageURLs), maxImageCount)
-	}
-
-	// Build KIE.AI input with model defaults, overridden by imageConfig if provided (Plan C).
-	input := model.KieAIInput{
-		Prompt:       prompt,
-		ImageInput:   imageURLs,
-		AspectRatio:  defaults.AspectRatio,
-		Resolution:   defaults.Resolution,
-		OutputFormat: defaults.OutputFormat,
-	}
-
-	if req.GenerationConfig != nil && req.GenerationConfig.ImageConfig != nil {
-		ic := req.GenerationConfig.ImageConfig
-		if ic.AspectRatio != "" {
-			input.AspectRatio = ic.AspectRatio
+	// Validate image count based on model type
+	maxImages := maxImageCount
+	if isEditModel {
+		maxImages = maxImageCountEdit
+		// Edit models require at least one image
+		if len(imageURLs) == 0 {
+			return nil, fmt.Errorf("transformer: edit model requires at least one image")
 		}
-		if ic.Resolution != "" {
-			input.Resolution = ic.Resolution
+	}
+	if len(imageURLs) > maxImages {
+		return nil, fmt.Errorf("transformer: too many images: %d > %d", len(imageURLs), maxImages)
+	}
+
+	// Build KIE.AI input based on model type
+	var input model.KieAIInput
+	if isEditModel {
+		// Edit model: use image_urls and image_size (aspectRatio only, no resolution)
+		aspectRatio := defaults.AspectRatio
+		if req.GenerationConfig != nil && req.GenerationConfig.ImageConfig != nil {
+			if req.GenerationConfig.ImageConfig.AspectRatio != "" {
+				aspectRatio = req.GenerationConfig.ImageConfig.AspectRatio
+			}
 		}
-		if ic.OutputFormat != "" {
-			input.OutputFormat = ic.OutputFormat
+
+		input = model.KieAIInput{
+			Prompt:       prompt,
+			ImageURLs:    imageURLs,
+			ImageSize:    aspectRatio, // Edit model uses aspectRatio as image_size
+			OutputFormat: defaults.OutputFormat,
+		}
+
+		if req.GenerationConfig != nil && req.GenerationConfig.ImageConfig != nil {
+			if req.GenerationConfig.ImageConfig.OutputFormat != "" {
+				input.OutputFormat = req.GenerationConfig.ImageConfig.OutputFormat
+			}
+		}
+	} else {
+		// Text-to-image model: use image_input, aspect_ratio, and resolution
+		input = model.KieAIInput{
+			Prompt:       prompt,
+			ImageInput:   imageURLs,
+			AspectRatio:  defaults.AspectRatio,
+			Resolution:   defaults.Resolution,
+			OutputFormat: defaults.OutputFormat,
+		}
+
+		if req.GenerationConfig != nil && req.GenerationConfig.ImageConfig != nil {
+			ic := req.GenerationConfig.ImageConfig
+			if ic.AspectRatio != "" {
+				input.AspectRatio = ic.AspectRatio
+			}
+			if ic.ImageSize != "" {
+				input.Resolution = ic.ImageSize
+			}
+			if ic.OutputFormat != "" {
+				input.OutputFormat = ic.OutputFormat
+			}
 		}
 	}
 
@@ -97,9 +143,12 @@ func (t *RequestTransformer) extractPartsContent(req *model.GoogleRequest) (stri
 
 			if part.FileData != nil && part.FileData.FileURI != "" {
 				uri := part.FileData.FileURI
-				if !strings.HasPrefix(uri, "https://") {
-					return "", nil, fmt.Errorf("transformer: FileData.FileURI must use https scheme: %q", uri)
+
+				// SSRF 防护：验证 URL 安全性
+				if err := security.ValidateImageURL(uri); err != nil {
+					return "", nil, fmt.Errorf("transformer: invalid fileUri: %w", err)
 				}
+
 				imageURLs = append(imageURLs, uri)
 			}
 		}
@@ -125,6 +174,8 @@ func (t *RequestTransformer) saveInlineData(data *model.InlineData) (string, err
 		}
 	}
 
+	// Note: Edit models have 10MB limit, text-to-image models have 30MB limit
+	// We use the larger limit here and let KIE.AI validate per-model
 	if len(raw) > maxImageBytes {
 		return "", fmt.Errorf("image exceeds 30MB limit (%d bytes)", len(raw))
 	}
