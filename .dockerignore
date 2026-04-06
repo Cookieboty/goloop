@@ -1,3 +1,41 @@
+# Git
 .git
+.gitignore
+.github
+
+# 文档
 *.md
 docs/
+LICENSE
+
+# 测试和开发文件
+*_test.go
+e2e/
+coverage.out
+*.test
+
+# 构建产物
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE 和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker 相关
+docker-compose.yml
+docker-compose.*.yml
+.dockerignore
+Dockerfile*
+
+# 临时文件
+/tmp/
+*.log
+*.tmp

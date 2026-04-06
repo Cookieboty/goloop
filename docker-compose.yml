@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  goloop:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: goloop
+    ports:
+      - "8080:8080"
+    volumes:
+      # 挂载配置文件
+      - ./config/config.yaml:/app/config/config.yaml:ro
+      # 持久化图片存储
+      - goloop-images:/tmp/images
+    environment:
+      # 可选：通过环境变量覆盖配置
+      # KIEAI_BASE_URL: https://api.kie.ai
+      # STORAGE_BASE_URL: http://localhost:8080/images
+      # STORAGE_LOCAL_PATH: /tmp/images
+      TZ: Asia/Shanghai
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  goloop-images:
+    driver: local

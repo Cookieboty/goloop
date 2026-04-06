@@ -43,8 +43,3 @@ model_mapping:
     aspect_ratio: "1:1"
     resolution: "1K"
     output_format: png
-  gemini-3.1-flash-image-edit:
-    kieai_model: google/nano-banana-edit
-    aspect_ratio: "1:1"
-    resolution: "1K"
-    output_format: png

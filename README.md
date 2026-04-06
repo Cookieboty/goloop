@@ -14,6 +14,7 @@
 - [API 使用](#api-使用)
 - [Docker 部署](#docker-部署)
 - [环境变量](#环境变量)
+- [生产部署指南](DEPLOYMENT.md) 📦
 
 ---
 
@@ -52,7 +53,6 @@
 | `gemini-3.1-flash-image-preview` | `nano-banana-2` | 文本生成图片 | 1K |
 | `gemini-3-pro-image-preview` | `nano-banana-pro` | 文本生成图片 | 1K |
 | `gemini-2.5-flash-image` | `google/nano-banana` | 文本生成图片 | 1K |
-| `gemini-3.1-flash-image-edit` | `google/nano-banana-edit` | 图片编辑 | - |
 
 ---
 
@@ -118,11 +118,6 @@ storage:
 model_mapping:
   gemini-3.1-flash-image-preview:
     kieai_model: nano-banana-2
-    aspect_ratio: "1:1"
-    resolution: "1K"
-    output_format: png
-  gemini-3.1-flash-image-edit:
-    kieai_model: google/nano-banana-edit
     aspect_ratio: "1:1"
     resolution: "1K"
     output_format: png
@@ -294,37 +289,6 @@ curl -X POST http://localhost:8080/v1beta/models/gemini-3.1-flash-image-preview:
     }
   }'
 ```
-
-### 图片编辑（Image Editing）
-
-使用 `gemini-3.1-flash-image-edit` 模型编辑已有图片：
-
-```bash
-curl -X POST http://localhost:8080/v1beta/models/gemini-3.1-flash-image-edit:generateContent \
-  -H "Content-Type: application/json" \
-  -H "x-goog-api-key: YOUR_KIEAI_API_KEY" \
-  -d '{
-    "contents": [{
-      "parts": [
-        {"text": "Add a wizard hat to the cat and change the background to a magical forest"},
-        {"inlineData": {"mimeType": "image/jpeg", "data": "<base64_encoded_image>"}}
-      ]
-    }],
-    "generationConfig": {
-      "imageConfig": {
-        "aspectRatio": "1:1",
-        "outputFormat": "png"
-      }
-    }
-  }'
-```
-
-**图片编辑要求：**
-- 必须提供至少 1 张图片（支持 base64 或 URL）
-- 最多支持 10 张图片
-- Prompt 最长 5000 字符
-- 单张图片最大 10MB
-- 支持的比例：`1:1`, `9:16`, `16:9`, `3:4`, `4:3`, `3:2`, `2:3`, `5:4`, `4:5`, `21:9`, `auto`
 
 ### 响应格式
 
