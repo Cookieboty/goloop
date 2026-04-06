@@ -2,44 +2,15 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 )
 
-func TestLoadConfig(t *testing.T) {
-	dir := t.TempDir()
-	yamlContent := `
-server:
-  port: 8080
-  read_timeout: 130s
-  write_timeout: 130s
-kieai:
-  base_url: https://api.kie.ai
-  timeout: 120s
-poller:
-  initial_interval: 2s
-  max_interval: 10s
-  max_wait_time: 120s
-  retry_attempts: 3
-storage:
-  type: local
-  local_path: /tmp/images
-  base_url: http://localhost:8080/images
-model_mapping:
-  gemini-3.1-flash-image-preview:
-    kieai_model: nano-banana-2
-    aspect_ratio: "1:1"
-    resolution: "1K"
-    output_format: png
-`
-	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(yamlContent), 0644); err != nil {
-		t.Fatal(err)
-	}
+func TestLoad(t *testing.T) {
+	t.Setenv("KIEAI_BASE_URL", "https://api.kie.ai")
+	t.Setenv("STORAGE_BASE_URL", "http://localhost:8080/images")
 
-	cfg, err := Load(path)
+	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load error: %v", err)
 	}
@@ -71,45 +42,43 @@ model_mapping:
 	}
 }
 
-func TestLoadConfig_EnvExpansion(t *testing.T) {
-	t.Setenv("TEST_BASE_URL", "https://custom.kie.ai")
-	dir := t.TempDir()
-	yaml := `
-server:
-  port: 9090
-kieai:
-  base_url: ${TEST_BASE_URL}
-  timeout: 30s
-model_mapping:
-  test-model:
-    kieai_model: test-kieai
-`
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0644)
+func TestLoad_EnvOverride(t *testing.T) {
+	t.Setenv("KIEAI_BASE_URL", "https://custom.kie.ai")
+	t.Setenv("STORAGE_BASE_URL", "http://custom:8080/images")
+	t.Setenv("SERVER_PORT", "9090")
+	t.Setenv("POLLER_RETRY_ATTEMPTS", "5")
 
-	cfg, err := Load(path)
+	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load error: %v", err)
 	}
 	if cfg.KieAI.BaseURL != "https://custom.kie.ai" {
-		t.Errorf("env expansion failed: got %q", cfg.KieAI.BaseURL)
+		t.Errorf("got %q", cfg.KieAI.BaseURL)
+	}
+	if cfg.Server.Port != 9090 {
+		t.Errorf("port: got %d", cfg.Server.Port)
+	}
+	if cfg.Poller.RetryAttempts != 5 {
+		t.Errorf("retry_attempts: got %d", cfg.Poller.RetryAttempts)
 	}
 }
 
-func TestLoadConfig_InvalidPort(t *testing.T) {
-	dir := t.TempDir()
-	yaml := `
-server:
-  port: 0
-kieai:
-  base_url: https://api.kie.ai
-model_mapping:
-  x:
-    kieai_model: y
-`
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0644)
-	_, err := Load(path)
+func TestLoad_MissingRequired(t *testing.T) {
+	t.Setenv("KIEAI_BASE_URL", "")
+	t.Setenv("STORAGE_BASE_URL", "")
+
+	_, err := Load()
+	if err == nil {
+		t.Error("expected error when KIEAI_BASE_URL is missing")
+	}
+}
+
+func TestLoad_InvalidPort(t *testing.T) {
+	t.Setenv("KIEAI_BASE_URL", "https://api.kie.ai")
+	t.Setenv("STORAGE_BASE_URL", "http://localhost:8080/images")
+	t.Setenv("SERVER_PORT", "0")
+
+	_, err := Load()
 	if err == nil {
 		t.Error("expected error for port=0")
 	}

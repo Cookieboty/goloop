@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -21,14 +20,11 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "config/config.yaml", "path to config file")
-	flag.Parse()
-
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})))
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("failed to load config", "err", err)
 		os.Exit(1)

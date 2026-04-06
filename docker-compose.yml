@@ -1,14 +1,14 @@
 services:
   goloop:
-    image: ghcr.io/cookieboty/goloop:master
-    container_name: goloop
+    image: ghcr.io/cookieboty/goloop:latest
     ports:
       - "8080:8080"
     volumes:
-      - ./config/config.yaml:/app/config/config.yaml:ro
       - goloop-images:/tmp/images
     environment:
       TZ: Asia/Shanghai
+      KIEAI_BASE_URL: ${KIEAI_BASE_URL}
+      STORAGE_BASE_URL: ${STORAGE_BASE_URL}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
