@@ -70,7 +70,17 @@ jobs:
             BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
             VCS_REF=${{ github.sha }}
             VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
-          outputs: type=image,name=target,annotation-index.org.opencontainers.image.description=goloop image
+
+      - name: 设置 GHCR 镜像为公开
+        if: github.event_name != 'pull_request'
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          curl -s -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/users/${OWNER}/packages/container/${{ env.IMAGE_NAME }}/visibility" \
+            -d '{"visibility":"public"}'
 
       - name: 输出镜像信息
         run: |
