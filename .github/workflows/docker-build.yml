@@ -127,4 +127,4 @@ jobs:
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
-          token: ${{ secrets.PAT_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
