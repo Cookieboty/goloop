@@ -60,3 +60,23 @@ func TestMissingAPIKey_Returns401(t *testing.T) {
 		t.Errorf("expected 401, got %d", w.Code)
 	}
 }
+
+func TestIsStreamingRequest(t *testing.T) {
+	tests := []struct {
+		accept string
+		expect bool
+	}{
+		{"text/event-stream", true},
+		{"application/json", false},
+		{"", false},
+		{"text/event-stream; charset=utf-8", true},
+		{"multipart/x-mixed-replace", true},
+	}
+
+	for _, tt := range tests {
+		r := &http.Request{Header: http.Header{"Accept": []string{tt.accept}}}
+		if got := isStreamingRequest(r); got != tt.expect {
+			t.Errorf("isStreamingRequest(%q) = %v, want %v", tt.accept, got, tt.expect)
+		}
+	}
+}

@@ -29,6 +29,20 @@ func NewRequestTransformer(store *storage.Store, modelMapping map[string]config.
 	return &RequestTransformer{store: store, modelMapping: modelMapping}
 }
 
+func (t *RequestTransformer) ListModels() []map[string]any {
+	result := make([]map[string]any, 0, len(t.modelMapping))
+	for name, m := range t.modelMapping {
+		result = append(result, map[string]any{
+			"name":          name,
+			"kieai_model":   m.KieAIModel,
+			"aspect_ratio":  m.AspectRatio,
+			"resolution":    m.Resolution,
+			"output_format": m.OutputFormat,
+		})
+	}
+	return result
+}
+
 // Transform converts a Google GenerateContent request into a KIE.AI CreateTask request.
 // googleModel is the model name from the URL path (e.g. "gemini-3.1-flash-image-preview").
 func (t *RequestTransformer) Transform(ctx context.Context, req *model.GoogleRequest, googleModel string) (*model.KieAICreateTaskRequest, error) {

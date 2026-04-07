@@ -42,10 +42,14 @@ build:
 	$(GO) build $(BUILD_FLAGS) -o bin/$(BINARY_NAME) $(MAIN_PATH)
 	@echo "编译完成: bin/$(BINARY_NAME)"
 
+# 加载 .env 文件（如果存在）
+-include .env
+export
+
 # 运行服务
 run:
 	@echo "启动服务..."
-	$(GO) run $(MAIN_PATH) --config config/config.yaml
+	$(GO) run $(MAIN_PATH)
 
 # 测试
 test:
@@ -149,7 +153,7 @@ ps:
 # 开发环境
 dev: build
 	@echo "启动开发模式..."
-	./bin/$(BINARY_NAME) --config config/config.yaml
+	./bin/$(BINARY_NAME)
 
 # 安装开发依赖
 install-tools:

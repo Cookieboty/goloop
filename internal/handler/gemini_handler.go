@@ -46,13 +46,160 @@ func NewGeminiHandler(
 // we register the parent prefix and extract the model from the URL path manually.
 func (h *GeminiHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1beta/models/", h.handleGenerateContent)
+	mux.HandleFunc("GET /v1beta/models", h.handleListModels)
 	mux.HandleFunc("GET /health", h.handleHealth)
+}
+
+func (h *GeminiHandler) handleListModels(w http.ResponseWriter, r *http.Request) {
+	models := h.reqTransformer.ListModels()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"models": models})
 }
 
 func (h *GeminiHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+// isStreamingRequest 检测请求是否期望 SSE 流式响应
+func isStreamingRequest(r *http.Request) bool {
+	accept := r.Header.Get("Accept")
+	return accept == "text/event-stream" ||
+		strings.Contains(accept, "text/event-stream") ||
+		strings.Contains(accept, "multipart/x-mixed-replace")
+}
+
+// handleGenerateContentStreaming 处理 SSE 流式响应
+func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r *http.Request, googleModel string, apiKey string, googleReq *model.GoogleRequest, requestID string) {
+	ctx := r.Context()
+	log := slog.With("requestId", requestID, "googleModel", googleModel)
+
+	// Transform Google request → KIE.AI request
+	kieaiReq, err := h.reqTransformer.Transform(ctx, googleReq, googleModel)
+	if err != nil {
+		log.Warn("request transform failed", "err", err)
+		gErr, code := transformer.ToGoogleError(422, err.Error())
+		h.writeSSEError(w, gErr, code)
+		return
+	}
+
+	log = log.With("kieaiModel", kieaiReq.Model)
+
+	// Submit task to KIE.AI
+	taskID, err := h.client.CreateTask(ctx, apiKey, kieaiReq)
+	if err != nil {
+		log.Error("createTask failed", "err", err)
+		code := resolveKieAIErrorCode(err)
+		gErr, httpCode := transformer.ToGoogleError(code, err.Error())
+		h.writeSSEError(w, gErr, httpCode)
+		return
+	}
+
+	log = log.With("taskId", taskID)
+	log.Info("task created, polling for result")
+
+	// 非阻塞提交到 worker pool
+	resultCh := h.taskManager.SubmitTaskStreaming(ctx, apiKey, taskID)
+
+	// 设置 SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Request-Id", requestID)
+	w.WriteHeader(http.StatusOK)
+
+	// 确保 flush 可用
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		h.writeSSEError(w, model.GoogleError{
+			Error: model.GoogleErrorDetail{Code: 500, Message: "streaming not supported", Status: "INTERNAL"},
+		}, http.StatusInternalServerError)
+		return
+	}
+
+	// 发送初始 connection 事件
+	h.writeSSEEvent(w, flusher, "event: connection\ndata: {\"status\":\"connected\"}\n\n")
+
+	// 等待任务结果
+	select {
+	case result := <-resultCh:
+		if result.Error != nil {
+			log.Error("task failed", "err", result.Error)
+			var tErr *kieai.TaskFailedError
+			if errors.As(result.Error, &tErr) {
+				gErr, _ := transformer.ToGoogleError(500, tErr.Reason)
+				h.writeSSEError(w, gErr, 500)
+			} else {
+				gErr, _ := transformer.ToGoogleError(500, result.Error.Error())
+				h.writeSSEError(w, gErr, 500)
+			}
+			return
+		}
+
+		record := result.Record
+		if record.ResultJSON() == nil || len(record.ResultJSON().ResultURLs) == 0 {
+			log.Error("task succeeded but no result URLs")
+			gErr, _ := transformer.ToGoogleError(500, "no result URLs")
+			h.writeSSEError(w, gErr, 500)
+			return
+		}
+
+		// Transform KIE.AI result → Google streaming response
+		googleResp, err := h.respTransformer.ToGoogleStreamingResponse(ctx, record.ResultJSON().ResultURLs, requestID)
+		if err != nil {
+			log.Error("response transform failed", "err", err)
+			gErr, _ := transformer.ToGoogleError(500, err.Error())
+			h.writeSSEError(w, gErr, 500)
+			return
+		}
+
+		// 发送最终结果
+		h.writeSSEData(w, flusher, googleResp)
+		h.writeSSEEvent(w, flusher, "data: [DONE]\n\n")
+
+	case <-ctx.Done():
+		log.Info("request cancelled")
+		h.writeSSEError(w, model.GoogleError{
+			Error: model.GoogleErrorDetail{Code: 499, Message: "client closed request", Status: "CANCELLED"},
+		}, 499)
+	}
+}
+
+// writeSSEEvent 写入原始 SSE 事件
+func (h *GeminiHandler) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, data string) {
+	w.Write([]byte(data))
+	flusher.Flush()
+}
+
+// writeSSEData 写入 JSON 格式的 SSE data 事件
+func (h *GeminiHandler) writeSSEData(w http.ResponseWriter, flusher http.Flusher, resp *model.StreamingResponse) {
+	jsonBytes, err := json.Marshal(resp)
+	if err != nil {
+		slog.Error("marshal streaming response failed", "err", err)
+		return
+	}
+	w.Write([]byte("data: "))
+	w.Write(jsonBytes)
+	w.Write([]byte("\n\n"))
+	flusher.Flush()
+}
+
+// writeSSEError 写入 SSE 错误事件并关闭连接
+func (h *GeminiHandler) writeSSEError(w http.ResponseWriter, e model.GoogleError, httpCode int) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		w.WriteHeader(httpCode)
+		return
+	}
+
+	w.WriteHeader(httpCode)
+	w.Write([]byte("event: error\ndata: "))
+
+	jsonBytes, _ := json.Marshal(e)
+	w.Write(jsonBytes)
+	w.Write([]byte("\n\n"))
+	flusher.Flush()
 }
 
 func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +249,12 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 		writeGoogleError(w, model.GoogleError{
 			Error: model.GoogleErrorDetail{Code: 400, Message: "invalid JSON: " + err.Error(), Status: "INVALID_ARGUMENT"},
 		}, http.StatusBadRequest)
+		return
+	}
+
+	// 检测是否 streaming 请求
+	if isStreamingRequest(r) {
+		h.handleGenerateContentStreaming(w, r, googleModel, apiKey, &googleReq, requestID)
 		return
 	}
 

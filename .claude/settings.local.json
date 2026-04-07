@@ -7,7 +7,9 @@
       "Bash(go test:*)",
       "Bash(go build:*)",
       "Bash(go version:*)",
-      "Bash(git remote:*)"
+      "Bash(git remote:*)",
+      "WebFetch(domain:ai.google.dev)",
+      "Bash(gofmt -w /Users/botycookie/ai/goloop/internal/model/google.go)"
     ]
   }
 }

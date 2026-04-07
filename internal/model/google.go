@@ -46,6 +46,20 @@ type GoogleResponse struct {
 	Candidates []Candidate `json:"candidates"`
 }
 
+// StreamingResponse 是 SSE 流式响应的数据结构
+type StreamingResponse struct {
+	Candidates    []Candidate    `json:"candidates"`
+	UsageMetadata *UsageMetadata `json:"usageMetadata,omitempty"`
+	ModelVersion  string         `json:"modelVersion,omitempty"`
+	ResponseId    string         `json:"responseId,omitempty"`
+}
+
+type UsageMetadata struct {
+	PromptTokenCount     int `json:"promptTokenCount,omitempty"`
+	CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
+	TotalTokenCount      int `json:"totalTokenCount,omitempty"`
+}
+
 type Candidate struct {
 	Content      Content `json:"content"`
 	FinishReason string  `json:"finishReason"`
