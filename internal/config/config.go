@@ -84,10 +84,7 @@ func getEnvInt(key string, fallback int) int {
 
 // Load reads from environment variables.
 func Load() (*Config, error) {
-	jwtSecret := getEnv("JWT_SECRET", "")
-	if jwtSecret == "" {
-		return nil, fmt.Errorf("config: JWT_SECRET is required")
-	}
+	jwtSecret := getEnv("JWT_SECRET", "dev-secret-change-in-production")
 
 	cfg := &Config{
 		Server: ServerConfig{
@@ -149,10 +146,6 @@ func Load() (*Config, error) {
 				AccountConfig{APIKey: key, Weight: weight})
 		}
 		cfg.Channels = map[string]ChannelConfig{"kieai": kieCh}
-	}
-
-	if len(cfg.Channels) == 0 {
-		return nil, fmt.Errorf("config: at least one channel must be configured (set KIEAI_BASE_URL)")
 	}
 
 	return cfg, nil
