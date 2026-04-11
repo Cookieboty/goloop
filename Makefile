@@ -1,4 +1,9 @@
-.PHONY: help build run test clean docker-build docker-run docker-push docker-compose-up docker-compose-down lint coverage
+.PHONY: help build run test clean docker-build docker-run docker-push docker-compose-up docker-compose-down lint coverage web-install web-build web-dev
+
+# Node/前端配置
+NODE=node
+NPM=npm
+WEB_DIR=web
 
 # 默认目标
 help:
@@ -18,6 +23,11 @@ help:
 	@echo "  make docker-push        - 推送镜像到仓库"
 	@echo "  make docker-stop        - 停止并删除容器"
 	@echo ""
+	@echo "前端命令:"
+	@echo "  make web-install        - 安装前端依赖 (npm install)"
+	@echo "  make web-build          - 构建前端静态资源 (Next.js export)"
+	@echo "  make web-dev            - 启动前端开发服务器 (:3000)"
+	@echo ""
 	@echo "Docker Compose 命令:"
 	@echo "  make up                 - 启动服务（docker-compose）"
 	@echo "  make down               - 停止服务"
@@ -36,9 +46,32 @@ IMAGE_NAME=goloop
 IMAGE_TAG=latest
 DOCKER_REGISTRY ?= ghcr.io/$(shell git remote get-url origin | sed -E 's|.*github\.com[:/](.*)(\.git)?$$|\1|' | tr '[:upper:]' '[:lower:]')
 
-# 编译
-build:
+# 前端构建
+web-install:
+	@echo "安装前端依赖..."
+	cd $(WEB_DIR) && $(NPM) install
+
+web-build:
+	@echo "构建前端静态资源..."
+	cd $(WEB_DIR) && $(NPM) run build
+	@echo "复制构建产物到 internal/admin/out..."
+	rm -rf internal/admin/out
+	cp -r $(WEB_DIR)/out internal/admin/out
+	@echo "前端构建完成"
+
+web-dev:
+	@echo "启动前端开发服务器 (http://localhost:3000)..."
+	cd $(WEB_DIR) && $(NPM) run dev
+
+# 编译（依赖前端构建）
+build: web-build
 	@echo "编译 $(BINARY_NAME)..."
+	$(GO) build $(BUILD_FLAGS) -o bin/$(BINARY_NAME) $(MAIN_PATH)
+	@echo "编译完成: bin/$(BINARY_NAME)"
+
+# 仅编译 Go（跳过前端，用于开发调试）
+build-go:
+	@echo "编译 $(BINARY_NAME)（跳过前端构建）..."
 	$(GO) build $(BUILD_FLAGS) -o bin/$(BINARY_NAME) $(MAIN_PATH)
 	@echo "编译完成: bin/$(BINARY_NAME)"
 
@@ -49,7 +82,7 @@ export
 # 运行服务
 run:
 	@echo "启动服务..."
-	$(GO) run $(MAIN_PATH)
+	@. ./.env && $(GO) run $(MAIN_PATH)
 
 # 测试
 test:
@@ -86,6 +119,8 @@ clean:
 	rm -rf bin/
 	rm -f coverage.out coverage.html
 	rm -rf /tmp/images/*
+	rm -rf internal/admin/out
+	rm -rf $(WEB_DIR)/.next $(WEB_DIR)/out
 	$(GO) clean -cache -testcache -modcache
 	@echo "清理完成"
 
