@@ -84,8 +84,7 @@ func main() {
 	}
 
 	if len(registry.List()) == 0 {
-		slog.Error("no channels registered")
-		os.Exit(1)
+		slog.Warn("no channels registered, running in degraded mode")
 	}
 
 	// Task manager for streaming (uses first kieai channel's baseURL)
@@ -108,18 +107,25 @@ func main() {
 
 	// Handlers
 	geminiHandler := handler.NewGeminiHandler(router, registry, issuer, store, taskManager, reqTransformer, respTransformer)
+	adminHandler := handler.NewAdminHandler(issuer, registry, health)
 
 	mux := http.NewServeMux()
 	geminiHandler.RegisterRoutes(mux)
+	adminHandler.RegisterRoutes(mux)
+
+	// Admin UI static files
+	mux.HandleFunc("/admin/ui/", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "internal/admin/ui/index.html")
+	})
 
 	// Image file server
 	mux.HandleFunc("/images/", func(w http.ResponseWriter, r *http.Request) {
 		http.StripPrefix("/images/", http.FileServer(http.Dir(cfg.Storage.LocalPath))).ServeHTTP(w, r)
 	})
 
-	// Root redirects to gemini endpoint
+	// Root redirects to admin UI
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/v1beta/models", http.StatusFound)
+		http.Redirect(w, r, "/admin/ui/", http.StatusFound)
 	})
 
 	server := &http.Server{
