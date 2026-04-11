@@ -1,8 +1,8 @@
-// cmd/server/main.go
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,18 +11,19 @@ import (
 	"syscall"
 	"time"
 
+	"goloop/internal/channels/kieai"
 	"goloop/internal/config"
+	"goloop/internal/core"
 	"goloop/internal/handler"
-	"goloop/internal/kieai"
-	"goloop/internal/middleware"
+	kieaipkg "goloop/internal/kieai"
 	"goloop/internal/storage"
 	"goloop/internal/transformer"
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	})))
+	flag.Parse()
+
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -30,46 +31,100 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Core infrastructure
+	registry := core.NewPluginRegistry()
+	health := core.NewHealthTracker()
+	router := core.NewRouter(registry, health)
+	issuer := core.NewJWTIssuer(cfg.JWT.Secret, cfg.JWT.Expiry)
+
+	// Storage
 	store, err := storage.NewStore(cfg.Storage.LocalPath, cfg.Storage.BaseURL)
 	if err != nil {
 		slog.Error("failed to init storage", "err", err)
 		os.Exit(1)
 	}
 
-	// 启动磁盘清理 worker
+	// Cleanup worker for old images
 	cleanupCtx, cancelCleanup := context.WithCancel(context.Background())
 	defer cancelCleanup()
 	go store.StartCleanupWorker(cleanupCtx, 1*time.Hour, 24*time.Hour)
 
-	kieaiClient := kieai.NewClient(cfg.KieAI.BaseURL, cfg.KieAI.Timeout)
+	// Bootstrap channels
+	var kieBaseURL string
+	var kieTimeout time.Duration
+	for name, chCfg := range cfg.Channels {
+		switch chCfg.Type {
+		case "kieai":
+			pool := kieai.NewAccountPool()
+			for _, acc := range chCfg.Accounts {
+				pool.AddAccount(acc.APIKey, acc.Weight)
+			}
+			timeout := chCfg.Timeout
+			if timeout == 0 {
+				timeout = 120 * time.Second
+			}
+			kieCh := kieai.NewChannel(chCfg.BaseURL, pool, kieai.Config{
+				BaseURL:         chCfg.BaseURL,
+				Timeout:         timeout,
+				InitialInterval: chCfg.InitialInterval,
+				MaxInterval:     chCfg.MaxInterval,
+				MaxWaitTime:     chCfg.MaxWaitTime,
+				RetryAttempts:   chCfg.RetryAttempts,
+			})
+			registry.Register(kieCh)
+			slog.Info("channel registered", "name", name, "accounts", len(chCfg.Accounts))
+			// Capture first kieai channel's baseURL for task manager
+			if kieBaseURL == "" {
+				kieBaseURL = chCfg.BaseURL
+				kieTimeout = timeout
+			}
+		default:
+			slog.Warn("unknown channel type", "name", name, "type", chCfg.Type)
+		}
+	}
 
-	// 使用 TaskManager 替代 Poller，实现 Worker Pool 模式
-	taskManager := kieai.NewTaskManager(kieaiClient, kieai.PollerConfig{
-		InitialInterval: cfg.Poller.InitialInterval,
-		MaxInterval:     cfg.Poller.MaxInterval,
-		MaxWaitTime:     cfg.Poller.MaxWaitTime,
-		RetryAttempts:   cfg.Poller.RetryAttempts,
-	}, 20) // 20 个并发 worker
-	defer taskManager.Stop()
+	if len(registry.List()) == 0 {
+		slog.Error("no channels registered")
+		os.Exit(1)
+	}
 
+	// Task manager for streaming (uses first kieai channel's baseURL)
+	var taskManager *kieaipkg.TaskManager
+	if kieBaseURL != "" {
+		kClient := kieaipkg.NewClient(kieBaseURL, kieTimeout)
+		pollerCfg := kieaipkg.PollerConfig{
+			InitialInterval: cfg.Channels["kieai"].InitialInterval,
+			MaxInterval:     cfg.Channels["kieai"].MaxInterval,
+			MaxWaitTime:     cfg.Channels["kieai"].MaxWaitTime,
+			RetryAttempts:   cfg.Channels["kieai"].RetryAttempts,
+		}
+		taskManager = kieaipkg.NewTaskManager(kClient, pollerCfg, 20)
+		defer taskManager.Stop()
+	}
+
+	// Transformers
 	reqTransformer := transformer.NewRequestTransformer(store, cfg.ModelMapping)
 	respTransformer := transformer.NewResponseTransformer(store)
 
-	geminiHandler := handler.NewGeminiHandler(reqTransformer, respTransformer, kieaiClient, taskManager)
+	// Handlers
+	geminiHandler := handler.NewGeminiHandler(router, registry, issuer, store, taskManager, reqTransformer, respTransformer)
+
 	mux := http.NewServeMux()
 	geminiHandler.RegisterRoutes(mux)
 
-	// 安全的图片文件服务（防止目录遍历攻击）
-	imageHandler := handler.NewImageHandler(cfg.Storage.LocalPath)
-	mux.Handle("/images/", imageHandler)
+	// Image file server
+	mux.HandleFunc("/images/", func(w http.ResponseWriter, r *http.Request) {
+		http.StripPrefix("/images/", http.FileServer(http.Dir(cfg.Storage.LocalPath))).ServeHTTP(w, r)
+	})
 
-	// 添加限流中间件
-	rateLimiter := middleware.NewRateLimiter(10, 20) // 每秒 10 个请求，突发 20
-	limitedHandler := rateLimiter.Middleware(mux)
+	// Root redirects to gemini endpoint
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/v1beta/models", http.StatusFound)
+	})
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler:      limitedHandler,
+		Handler:      mux,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}
@@ -89,11 +144,6 @@ func main() {
 	slog.Info("shutting down server...")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	if err := server.Shutdown(ctx); err != nil {
-		slog.Error("graceful shutdown failed", "err", err)
-		os.Exit(1)
-	}
-
+	server.Shutdown(ctx)
 	slog.Info("server stopped")
 }
