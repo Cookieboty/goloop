@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"goloop/internal/admin"
 	"goloop/internal/channels/kieai"
 	"goloop/internal/config"
 	"goloop/internal/core"
@@ -49,9 +51,10 @@ func main() {
 	defer cancelCleanup()
 	go store.StartCleanupWorker(cleanupCtx, 1*time.Hour, 24*time.Hour)
 
-	// Bootstrap channels
+	// Bootstrap all configured channels
 	var kieBaseURL string
 	var kieTimeout time.Duration
+
 	for name, chCfg := range cfg.Channels {
 		switch chCfg.Type {
 		case "kieai":
@@ -72,14 +75,15 @@ func main() {
 				RetryAttempts:   chCfg.RetryAttempts,
 			})
 			registry.Register(kieCh)
-			slog.Info("channel registered", "name", name, "accounts", len(chCfg.Accounts))
-			// Capture first kieai channel's baseURL for task manager
+			slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
+
+			// Capture the first kieai channel's connection info for the task manager.
 			if kieBaseURL == "" {
 				kieBaseURL = chCfg.BaseURL
 				kieTimeout = timeout
 			}
 		default:
-			slog.Warn("unknown channel type", "name", name, "type", chCfg.Type)
+			slog.Warn("unknown channel type, skipping", "name", name, "type", chCfg.Type)
 		}
 	}
 
@@ -87,7 +91,7 @@ func main() {
 		slog.Warn("no channels registered, running in degraded mode")
 	}
 
-	// Task manager for streaming (uses first kieai channel's baseURL)
+	// Task manager for streaming (uses the first kieai channel's connection).
 	var taskManager *kieaipkg.TaskManager
 	if kieBaseURL != "" {
 		kClient := kieaipkg.NewClient(kieBaseURL, kieTimeout)
@@ -101,22 +105,30 @@ func main() {
 		defer taskManager.Stop()
 	}
 
+	// Start health reaper for automatic account recovery.
+	reaper := core.NewHealthReaper(registry, health, cfg.Health.ProbeInterval, cfg.Health.RecoveryThreshold)
+	reaper.Start()
+	defer reaper.Stop()
+
 	// Transformers
 	reqTransformer := transformer.NewRequestTransformer(store, cfg.ModelMapping)
 	respTransformer := transformer.NewResponseTransformer(store)
 
-	// Handlers
+	// HTTP handlers
 	geminiHandler := handler.NewGeminiHandler(router, registry, issuer, store, taskManager, reqTransformer, respTransformer)
-	adminHandler := handler.NewAdminHandler(issuer, registry, health)
+	adminHandler := handler.NewAdminHandler(issuer, registry, health, cfg.AdminPassword)
 
 	mux := http.NewServeMux()
 	geminiHandler.RegisterRoutes(mux)
 	adminHandler.RegisterRoutes(mux)
 
-	// Admin UI static files
-	mux.HandleFunc("/admin/ui/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "internal/admin/ui/index.html")
-	})
+	// Admin UI static files (embedded Next.js static export)
+	uiFS, uiErr := fs.Sub(admin.UIAssets, "out")
+	if uiErr != nil {
+		slog.Error("failed to create UI sub-FS", "err", uiErr)
+		os.Exit(1)
+	}
+	mux.Handle("/admin/ui/", http.StripPrefix("/admin/ui/", http.FileServerFS(uiFS)))
 
 	// Image file server
 	mux.HandleFunc("/images/", func(w http.ResponseWriter, r *http.Request) {

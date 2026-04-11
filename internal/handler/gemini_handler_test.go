@@ -1,4 +1,3 @@
-// internal/handler/gemini_handler_test.go
 package handler
 
 import (
@@ -7,29 +6,6 @@ import (
 	"strings"
 	"testing"
 )
-
-func TestExtractAPIKey_XGoogHeader(t *testing.T) {
-	r, _ := http.NewRequest("POST", "/", nil)
-	r.Header.Set("x-goog-api-key", "my-secret-key")
-	if got := extractAPIKey(r); got != "my-secret-key" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractAPIKey_BearerToken(t *testing.T) {
-	r, _ := http.NewRequest("POST", "/", nil)
-	r.Header.Set("Authorization", "Bearer bearer-token-123")
-	if got := extractAPIKey(r); got != "bearer-token-123" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractAPIKey_Missing(t *testing.T) {
-	r, _ := http.NewRequest("POST", "/", nil)
-	if got := extractAPIKey(r); got != "" {
-		t.Errorf("expected empty, got %q", got)
-	}
-}
 
 func TestHandleHealth(t *testing.T) {
 	w := httptest.NewRecorder()

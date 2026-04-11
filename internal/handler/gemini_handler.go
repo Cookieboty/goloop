@@ -1,4 +1,3 @@
-// internal/handler/gemini_handler.go
 package handler
 
 import (
@@ -24,11 +23,11 @@ const maxRequestBodyBytes = 10 * 1024 * 1024 // 10MB
 
 // GeminiHandler handles POST /v1beta/models/{model}:generateContent
 type GeminiHandler struct {
-	router       *core.Router
-	registry     *core.PluginRegistry
-	issuer       *core.JWTIssuer
-	storage      *storage.Store
-	taskManager  *kieai.TaskManager
+	router          *core.Router
+	registry        *core.PluginRegistry
+	issuer          *core.JWTIssuer
+	storage         *storage.Store
+	taskManager     *kieai.TaskManager
 	reqTransformer  *transformer.RequestTransformer
 	respTransformer *transformer.ResponseTransformer
 }
@@ -58,7 +57,6 @@ func NewGeminiHandler(
 // Route: GET /v1beta/models (public)
 // Route: GET /health (public)
 func (h *GeminiHandler) RegisterRoutes(mux *http.ServeMux) {
-	// JWT-protected POST /v1beta/models/{model}:generateContent
 	protected := core.NewJWTMiddleware(h.issuer, h.handleProtected)
 	mux.Handle("POST /v1beta/models/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		protected.ServeHTTP(w, r)
@@ -80,26 +78,39 @@ func (h *GeminiHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleProtected is called by JWTMiddleware after JWT validation succeeds.
-// It extracts the model from URL and delegates to handleGenerateContent.
+// It injects the JWT api_key into the request header and the channel restriction
+// into the context, then delegates to handleGenerateContent.
 func (h *GeminiHandler) handleProtected(ctx context.Context, claims *core.JWTClaims, w http.ResponseWriter, r *http.Request) {
+	// Use the API key embedded in the JWT if present.
+	// This avoids clients having to pass x-goog-api-key separately.
+	if claims.APIKey != "" {
+		r = r.Clone(ctx)
+		r.Header.Set("x-goog-api-key", claims.APIKey)
+	}
+
+	// If the JWT specifies a channel restriction, inject it into context
+	// so the router honours it.
+	if claims.Channel != "" {
+		ctx = core.WithChannelRestriction(ctx, claims.Channel)
+		r = r.WithContext(ctx)
+	}
+
 	h.handleGenerateContent(w, r)
 }
 
-// isStreamingRequest 检测请求是否期望 SSE 流式响应
+// isStreamingRequest detects whether the client expects an SSE streaming response.
 func isStreamingRequest(r *http.Request) bool {
 	accept := r.Header.Get("Accept")
-	return accept == "text/event-stream" ||
-		strings.Contains(accept, "text/event-stream") ||
+	return strings.Contains(accept, "text/event-stream") ||
 		strings.Contains(accept, "multipart/x-mixed-replace")
 }
 
-// handleGenerateContentStreaming 处理 SSE 流式响应
-func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r *http.Request, googleModel string, apiKey string, googleReq *model.GoogleRequest, requestID string) {
+// handleGenerateContentStreaming handles SSE streaming responses.
+func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r *http.Request, googleModel, apiKey string, googleReq *model.GoogleRequest, requestID string) {
 	ctx := r.Context()
 	log := slog.With("requestId", requestID, "googleModel", googleModel)
 
-	// Get channel from router
-	ch, err := h.router.RouteForModel(googleModel)
+	ch, err := h.router.RouteForModel(ctx, googleModel)
 	if err != nil {
 		log.Error("router error", "err", err)
 		h.writeSSEError(w, model.GoogleError{
@@ -109,7 +120,6 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 	}
 	log = log.With("channel", ch.Name())
 
-	// Submit task via channel
 	taskID, err := ch.SubmitTask(ctx, apiKey, googleReq, googleModel)
 	if err != nil {
 		log.Error("submitTask failed", "err", err)
@@ -121,17 +131,14 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 	log = log.With("taskId", taskID)
 	log.Info("task created, polling for result")
 
-	// 非阻塞提交到 worker pool
 	resultCh := h.taskManager.SubmitTaskStreaming(ctx, apiKey, taskID)
 
-	// 设置 SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Request-Id", requestID)
 	w.WriteHeader(http.StatusOK)
 
-	// 确保 flush 可用
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		h.writeSSEError(w, model.GoogleError{
@@ -140,10 +147,8 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 		return
 	}
 
-	// 发送初始 connection 事件
 	h.writeSSEEvent(w, flusher, "event: connection\ndata: {\"status\":\"connected\"}\n\n")
 
-	// 等待任务结果
 	select {
 	case result := <-resultCh:
 		start := time.Now()
@@ -170,7 +175,6 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 			return
 		}
 
-		// Transform KIE.AI result → Google streaming response
 		googleResp, err := h.respTransformer.ToGoogleStreamingResponse(ctx, record.ResultJSON().ResultURLs, requestID)
 		if err != nil {
 			log.Error("response transform failed", "err", err)
@@ -180,7 +184,6 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 			return
 		}
 
-		// 发送最终结果
 		h.writeSSEData(w, flusher, googleResp)
 		h.writeSSEEvent(w, flusher, "data: [DONE]\n\n")
 		h.router.RecordResult(ch.Name(), true, time.Since(start).Milliseconds())
@@ -193,13 +196,11 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 	}
 }
 
-// writeSSEEvent 写入原始 SSE 事件
 func (h *GeminiHandler) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, data string) {
 	w.Write([]byte(data))
 	flusher.Flush()
 }
 
-// writeSSEData 写入 JSON 格式的 SSE data 事件
 func (h *GeminiHandler) writeSSEData(w http.ResponseWriter, flusher http.Flusher, resp *model.StreamingResponse) {
 	jsonBytes, err := json.Marshal(resp)
 	if err != nil {
@@ -212,17 +213,14 @@ func (h *GeminiHandler) writeSSEData(w http.ResponseWriter, flusher http.Flusher
 	flusher.Flush()
 }
 
-// writeSSEError 写入 SSE 错误事件并关闭连接
 func (h *GeminiHandler) writeSSEError(w http.ResponseWriter, e model.GoogleError, httpCode int) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		w.WriteHeader(httpCode)
 		return
 	}
-
 	w.WriteHeader(httpCode)
 	w.Write([]byte("event: error\ndata: "))
-
 	jsonBytes, _ := json.Marshal(e)
 	w.Write(jsonBytes)
 	w.Write([]byte("\n\n"))
@@ -232,8 +230,6 @@ func (h *GeminiHandler) writeSSEError(w http.ResponseWriter, e model.GoogleError
 func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Extract model from path: /v1beta/models/{model}:generateContent
-	// Path matched via prefix /v1beta/models/
 	suffix := strings.TrimPrefix(r.URL.Path, "/v1beta/models/")
 	googleModel, action, found := strings.Cut(suffix, ":")
 	if !found || action != "generateContent" || googleModel == "" {
@@ -244,8 +240,11 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 	requestID := generateRequestID()
 	log := slog.With("requestId", requestID, "googleModel", googleModel)
 
-	// Extract API key from x-goog-api-key or Authorization: Bearer
-	apiKey := extractAPIKey(r)
+	// API key resolution order:
+	// 1. x-goog-api-key header (set by handleProtected from JWT claims.APIKey)
+	// 2. x-goog-api-key header passed directly by the client
+	// The JWT itself is NOT used as the upstream API key.
+	apiKey := r.Header.Get("x-goog-api-key")
 	if apiKey == "" {
 		writeGoogleError(w, model.GoogleError{
 			Error: model.GoogleErrorDetail{Code: 401, Message: "API key not provided", Status: "UNAUTHENTICATED"},
@@ -253,7 +252,6 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Parse request body (max 10MB)
 	limited := io.LimitReader(r.Body, maxRequestBodyBytes+1)
 	bodyBytes, err := io.ReadAll(limited)
 	if err != nil {
@@ -279,14 +277,13 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// 检测是否 streaming 请求
 	if isStreamingRequest(r) {
 		h.handleGenerateContentStreaming(w, r, googleModel, apiKey, &googleReq, requestID)
 		return
 	}
 
-	// Get channel from router
-	ch, err := h.router.RouteForModel(googleModel)
+	// Route with context — honours JWT channel restriction if present.
+	ch, err := h.router.RouteForModel(ctx, googleModel)
 	if err != nil {
 		log.Error("router error", "err", err)
 		writeGoogleError(w, model.GoogleError{
@@ -296,7 +293,6 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 	}
 	log = log.With("channel", ch.Name())
 
-	// Submit task via channel
 	taskID, err := ch.SubmitTask(ctx, apiKey, &googleReq, googleModel)
 	if err != nil {
 		log.Error("submitTask failed", "err", err)
@@ -310,7 +306,6 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 
 	start := time.Now()
 
-	// Poll for result via channel
 	googleResp, err := ch.PollTask(ctx, apiKey, taskID)
 	if err != nil {
 		log.Error("poll failed", "err", err)
@@ -331,17 +326,6 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(googleResp)
-}
-
-func extractAPIKey(r *http.Request) string {
-	if key := r.Header.Get("x-goog-api-key"); key != "" {
-		return key
-	}
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
-	}
-	return ""
 }
 
 func writeGoogleError(w http.ResponseWriter, e model.GoogleError, httpCode int) {

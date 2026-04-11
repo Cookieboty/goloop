@@ -1,0 +1,55 @@
+server:
+  port: 8080
+  read_timeout: 130s
+  write_timeout: 130s
+
+jwt:
+  secret: "${JWT_SECRET}"
+  expiry: 24h
+
+storage:
+  type: local
+  local_path: /tmp/images
+  base_url: ${STORAGE_BASE_URL}
+
+health:
+  probe_interval: 30s
+  probe_timeout: 5s
+  recovery_threshold: 2
+
+channels:
+  kieai:
+    type: kieai
+    base_url: https://api.kie.ai
+    timeout: 120s
+    initial_interval: 2s
+    max_interval: 10s
+    max_wait_time: 120s
+    retry_attempts: 3
+    accounts:
+      - api_key: "${KIEAI_KEY_1}"
+        weight: 50
+      - api_key: "${KIEAI_KEY_2}"
+        weight: 30
+      - api_key: "${KIEAI_KEY_3}"
+        weight: 20
+
+model_mapping:
+  gemini-3.1-flash-image-preview:
+    channel: kieai
+    kieai_model: nano-banana-2
+    aspect_ratio: "1:1"
+    resolution: "1K"
+    output_format: png
+  gemini-3-pro-image-preview:
+    channel: kieai
+    kieai_model: nano-banana-pro
+    aspect_ratio: "1:1"
+    resolution: "2K"
+    output_format: png
+  gemini-2.5-flash-image:
+    channel: kieai
+    kieai_model: google/nano-banana
+    aspect_ratio: "1:1"
+    resolution: "1K"
+    output_format: png

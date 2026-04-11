@@ -1,25 +1,59 @@
 package core
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"math/rand"
-	"sync"
 	"time"
 )
+
+type routerContextKey string
+
+const ChannelRestrictionKey routerContextKey = "channel_restriction"
+
+// WithChannelRestriction returns a context that restricts routing to a specific channel.
+func WithChannelRestriction(ctx context.Context, channelName string) context.Context {
+	return context.WithValue(ctx, ChannelRestrictionKey, channelName)
+}
+
+// ChannelRestrictionFromContext returns the channel restriction from the context, if any.
+func ChannelRestrictionFromContext(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(ChannelRestrictionKey).(string)
+	return v, ok && v != ""
+}
 
 // Router selects the best channel using weighted random + health awareness.
 type Router struct {
 	reg    *PluginRegistry
 	health *HealthTracker
-	mu     sync.RWMutex
 }
 
 func NewRouter(reg *PluginRegistry, health *HealthTracker) *Router {
 	return &Router{reg: reg, health: health}
 }
 
-// Route selects a healthy channel using weighted random selection.
-func (r *Router) Route() (Channel, error) {
+// RouteForModel selects a healthy channel for the given model.
+// If the context carries a channel restriction (set by JWT middleware), only
+// that channel will be considered.
+func (r *Router) RouteForModel(ctx context.Context, modelName string) (Channel, error) {
+	// Honor JWT channel restriction if present.
+	if restricted, ok := ChannelRestrictionFromContext(ctx); ok {
+		ch, found := r.reg.Get(restricted)
+		if !found {
+			return nil, fmt.Errorf("router: restricted channel %q not found", restricted)
+		}
+		if !ch.IsAvailable() {
+			return nil, fmt.Errorf("router: restricted channel %q is not available", restricted)
+		}
+		return ch, nil
+	}
+
+	return r.route()
+}
+
+// route selects a healthy channel using weighted random selection across all channels.
+func (r *Router) route() (Channel, error) {
 	channels := r.reg.List()
 
 	var candidates []Channel
@@ -56,11 +90,6 @@ func (r *Router) Route() (Channel, error) {
 		}
 	}
 	return candidates[len(candidates)-1], nil
-}
-
-// RouteForModel routes for a specific model (currently just delegates to Route).
-func (r *Router) RouteForModel(modelName string) (Channel, error) {
-	return r.Route()
 }
 
 // RecordResult updates health based on call outcome.
