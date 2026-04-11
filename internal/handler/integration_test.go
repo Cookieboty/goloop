@@ -11,8 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+	"goloop/internal/channels/kieai"
+	kieaipkg "goloop/internal/kieai"
 	"goloop/internal/config"
-	"goloop/internal/kieai"
+	"goloop/internal/core"
 	"goloop/internal/model"
 	"goloop/internal/security"
 	"goloop/internal/storage"
@@ -21,7 +24,7 @@ import (
 
 // setupIntegrationTest creates a full stack with a fake KIE.AI server and a fake image CDN.
 // cdnResultURL is the URL that KIE.AI will return as a result image URL.
-func setupIntegrationTest(t *testing.T, kieaiHandler http.Handler, cdnResultURL string) *http.ServeMux {
+func setupIntegrationTest(t *testing.T, kieaiHandler http.Handler, cdnResultURL string) (*http.ServeMux, *core.JWTIssuer) {
 	t.Helper()
 
 	kieaiSrv := httptest.NewServer(kieaiHandler)
@@ -40,16 +43,35 @@ func setupIntegrationTest(t *testing.T, kieaiHandler http.Handler, cdnResultURL 
 		},
 	})
 
+	// Core infrastructure
+	registry := core.NewPluginRegistry()
+	health := core.NewHealthTracker()
+	router := core.NewRouter(registry, health)
+	issuer := core.NewJWTIssuer("test-secret", 1*time.Hour)
+
+	// Create kieai channel for testing
+	pool := kieai.NewAccountPool()
+	pool.AddAccount("test-key", 100)
+	ch := kieai.NewChannel(kieaiSrv.URL, pool, kieai.Config{
+		BaseURL:         kieaiSrv.URL,
+		Timeout:         10 * time.Second,
+		InitialInterval: 10 * time.Millisecond,
+		MaxInterval:     30 * time.Millisecond,
+		MaxWaitTime:    5 * time.Second,
+		RetryAttempts:   3,
+	})
+	registry.Register(ch)
+
 	modelMapping := map[string]config.ModelDefaults{
 		"gemini-3.1-flash-image-preview": {
-			KieAIModel: "nano-banana-2", AspectRatio: "1:1", Resolution: "1K", OutputFormat: "png",
+			Channel: "kieai", KieAIModel: "nano-banana-2", AspectRatio: "1:1", Resolution: "1K", OutputFormat: "png",
 		},
 	}
 
 	reqTr := transformer.NewRequestTransformer(store, modelMapping)
 	respTr := transformer.NewResponseTransformer(store)
-	client := kieai.NewClient(kieaiSrv.URL, 10*time.Second)
-	taskManager := kieai.NewTaskManager(client, kieai.PollerConfig{
+	client := kieaipkg.NewClient(kieaiSrv.URL, 10*time.Second)
+	taskManager := kieaipkg.NewTaskManager(client, kieaipkg.PollerConfig{
 		InitialInterval: 10 * time.Millisecond,
 		MaxInterval:     30 * time.Millisecond,
 		MaxWaitTime:     5 * time.Second,
@@ -57,10 +79,10 @@ func setupIntegrationTest(t *testing.T, kieaiHandler http.Handler, cdnResultURL 
 	}, 2) // 2 workers for test
 	t.Cleanup(taskManager.Stop)
 
-	h := NewGeminiHandler(reqTr, respTr, client, taskManager)
+	h := NewGeminiHandler(router, registry, issuer, store, taskManager, reqTr, respTr)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
-	return mux
+	return mux, issuer
 }
 
 func TestIntegration_TextToImage_Success(t *testing.T) {
@@ -99,16 +121,23 @@ func TestIntegration_TextToImage_Success(t *testing.T) {
 		json.NewEncoder(w).Encode(resp)
 	})
 
-	mux := setupIntegrationTest(t, kieaiMux, resultURL)
+	mux, issuer := setupIntegrationTest(t, kieaiMux, resultURL)
 	appSrv := httptest.NewServer(mux)
 	defer appSrv.Close()
+
+	// Issue JWT token for the request
+	token, _ := issuer.Issue(&core.JWTClaims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: "test-user"},
+		APIKey:  "test-api-key",
+		Channel: "kieai",
+	})
 
 	body := `{"contents":[{"parts":[{"text":"draw a sunset"}]}]}`
 	req, _ := http.NewRequest("POST",
 		appSrv.URL+"/v1beta/models/gemini-3.1-flash-image-preview:generateContent",
 		strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-goog-api-key", "test-api-key")
+	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -132,7 +161,7 @@ func TestIntegration_TextToImage_Success(t *testing.T) {
 }
 
 func TestIntegration_MissingAPIKey(t *testing.T) {
-	mux := setupIntegrationTest(t, http.NewServeMux(), "")
+	mux, _ := setupIntegrationTest(t, http.NewServeMux(), "")
 	appSrv := httptest.NewServer(mux)
 	defer appSrv.Close()
 
@@ -159,7 +188,7 @@ func TestIntegration_MissingAPIKey(t *testing.T) {
 }
 
 func TestIntegration_HealthCheck(t *testing.T) {
-	mux := setupIntegrationTest(t, http.NewServeMux(), "")
+	mux, _ := setupIntegrationTest(t, http.NewServeMux(), "")
 	appSrv := httptest.NewServer(mux)
 	defer appSrv.Close()
 

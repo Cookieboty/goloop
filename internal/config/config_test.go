@@ -7,6 +7,7 @@ import (
 )
 
 func TestLoad(t *testing.T) {
+	t.Setenv("JWT_SECRET", "test-secret-for-config-test")
 	t.Setenv("KIEAI_BASE_URL", "https://api.kie.ai")
 	t.Setenv("STORAGE_BASE_URL", "http://localhost:8080/images")
 
@@ -21,14 +22,14 @@ func TestLoad(t *testing.T) {
 	if cfg.Server.ReadTimeout != 130*time.Second {
 		t.Errorf("read_timeout: got %v, want 130s", cfg.Server.ReadTimeout)
 	}
-	if cfg.KieAI.BaseURL != "https://api.kie.ai" {
-		t.Errorf("base_url: got %q", cfg.KieAI.BaseURL)
+	if cfg.Channels["kieai"].BaseURL != "https://api.kie.ai" {
+		t.Errorf("base_url: got %q", cfg.Channels["kieai"].BaseURL)
 	}
-	if cfg.Poller.InitialInterval != 2*time.Second {
-		t.Errorf("initial_interval: got %v", cfg.Poller.InitialInterval)
+	if cfg.Channels["kieai"].InitialInterval != 2*time.Second {
+		t.Errorf("initial_interval: got %v", cfg.Channels["kieai"].InitialInterval)
 	}
-	if cfg.Poller.RetryAttempts != 3 {
-		t.Errorf("retry_attempts: got %d", cfg.Poller.RetryAttempts)
+	if cfg.Channels["kieai"].RetryAttempts != 3 {
+		t.Errorf("retry_attempts: got %d", cfg.Channels["kieai"].RetryAttempts)
 	}
 	m, ok := cfg.ModelMapping["gemini-3.1-flash-image-preview"]
 	if !ok {
@@ -43,6 +44,7 @@ func TestLoad(t *testing.T) {
 }
 
 func TestLoad_EnvOverride(t *testing.T) {
+	t.Setenv("JWT_SECRET", "test-secret")
 	t.Setenv("KIEAI_BASE_URL", "https://custom.kie.ai")
 	t.Setenv("STORAGE_BASE_URL", "http://custom:8080/images")
 	t.Setenv("SERVER_PORT", "9090")
@@ -52,18 +54,19 @@ func TestLoad_EnvOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load error: %v", err)
 	}
-	if cfg.KieAI.BaseURL != "https://custom.kie.ai" {
-		t.Errorf("got %q", cfg.KieAI.BaseURL)
+	if cfg.Channels["kieai"].BaseURL != "https://custom.kie.ai" {
+		t.Errorf("got %q", cfg.Channels["kieai"].BaseURL)
 	}
 	if cfg.Server.Port != 9090 {
 		t.Errorf("port: got %d", cfg.Server.Port)
 	}
-	if cfg.Poller.RetryAttempts != 5 {
-		t.Errorf("retry_attempts: got %d", cfg.Poller.RetryAttempts)
+	if cfg.Channels["kieai"].RetryAttempts != 5 {
+		t.Errorf("retry_attempts: got %d", cfg.Channels["kieai"].RetryAttempts)
 	}
 }
 
 func TestLoad_MissingRequired(t *testing.T) {
+	t.Setenv("JWT_SECRET", "test-secret")
 	t.Setenv("KIEAI_BASE_URL", "")
 	t.Setenv("STORAGE_BASE_URL", "")
 
