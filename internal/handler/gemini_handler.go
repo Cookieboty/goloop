@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -10,9 +11,12 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
+	"goloop/internal/core"
 	"goloop/internal/kieai"
 	"goloop/internal/model"
+	"goloop/internal/storage"
 	"goloop/internal/transformer"
 )
 
@@ -20,32 +24,45 @@ const maxRequestBodyBytes = 10 * 1024 * 1024 // 10MB
 
 // GeminiHandler handles POST /v1beta/models/{model}:generateContent
 type GeminiHandler struct {
+	router       *core.Router
+	registry     *core.PluginRegistry
+	issuer       *core.JWTIssuer
+	storage      *storage.Store
+	taskManager  *kieai.TaskManager
 	reqTransformer  *transformer.RequestTransformer
 	respTransformer *transformer.ResponseTransformer
-	client          *kieai.Client
-	taskManager     *kieai.TaskManager
 }
 
 func NewGeminiHandler(
+	router *core.Router,
+	registry *core.PluginRegistry,
+	issuer *core.JWTIssuer,
+	storage *storage.Store,
+	taskManager *kieai.TaskManager,
 	reqTransformer *transformer.RequestTransformer,
 	respTransformer *transformer.ResponseTransformer,
-	client *kieai.Client,
-	taskManager *kieai.TaskManager,
 ) *GeminiHandler {
 	return &GeminiHandler{
+		router:          router,
+		registry:        registry,
+		issuer:          issuer,
+		storage:         storage,
+		taskManager:     taskManager,
 		reqTransformer:  reqTransformer,
 		respTransformer: respTransformer,
-		client:          client,
-		taskManager:     taskManager,
 	}
 }
 
 // RegisterRoutes mounts the handler onto the provided mux.
-// Route: POST /v1beta/models/{model}:generateContent
-// Because Go 1.22+ path patterns require wildcard segments to be entire path segments,
-// we register the parent prefix and extract the model from the URL path manually.
+// Route: POST /v1beta/models/{model}:generateContent (JWT-protected)
+// Route: GET /v1beta/models (public)
+// Route: GET /health (public)
 func (h *GeminiHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1beta/models/", h.handleGenerateContent)
+	// JWT-protected POST /v1beta/models/{model}:generateContent
+	protected := core.NewJWTMiddleware(h.issuer, h.handleProtected)
+	mux.Handle("POST /v1beta/models/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		protected.ServeHTTP(w, r)
+	}))
 	mux.HandleFunc("GET /v1beta/models", h.handleListModels)
 	mux.HandleFunc("GET /health", h.handleHealth)
 }
@@ -62,6 +79,12 @@ func (h *GeminiHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
+// handleProtected is called by JWTMiddleware after JWT validation succeeds.
+// It extracts the model from URL and delegates to handleGenerateContent.
+func (h *GeminiHandler) handleProtected(ctx context.Context, claims *core.JWTClaims, w http.ResponseWriter, r *http.Request) {
+	h.handleGenerateContent(w, r)
+}
+
 // isStreamingRequest 检测请求是否期望 SSE 流式响应
 func isStreamingRequest(r *http.Request) bool {
 	accept := r.Header.Get("Accept")
@@ -75,27 +98,26 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 	ctx := r.Context()
 	log := slog.With("requestId", requestID, "googleModel", googleModel)
 
-	// Transform Google request → KIE.AI request
-	kieaiReq, err := h.reqTransformer.Transform(ctx, googleReq, googleModel)
+	// Get channel from router
+	ch, err := h.router.RouteForModel(googleModel)
 	if err != nil {
-		log.Warn("request transform failed", "err", err)
-		gErr, code := transformer.ToGoogleError(422, err.Error())
-		h.writeSSEError(w, gErr, code)
+		log.Error("router error", "err", err)
+		h.writeSSEError(w, model.GoogleError{
+			Error: model.GoogleErrorDetail{Code: 503, Message: "no healthy channels", Status: "UNAVAILABLE"},
+		}, http.StatusServiceUnavailable)
 		return
 	}
+	log = log.With("channel", ch.Name())
 
-	log = log.With("kieaiModel", kieaiReq.Model)
-
-	// Submit task to KIE.AI
-	taskID, err := h.client.CreateTask(ctx, apiKey, kieaiReq)
+	// Submit task via channel
+	taskID, err := ch.SubmitTask(ctx, apiKey, googleReq, googleModel)
 	if err != nil {
-		log.Error("createTask failed", "err", err)
-		code := resolveKieAIErrorCode(err)
-		gErr, httpCode := transformer.ToGoogleError(code, err.Error())
-		h.writeSSEError(w, gErr, httpCode)
+		log.Error("submitTask failed", "err", err)
+		h.writeSSEError(w, model.GoogleError{
+			Error: model.GoogleErrorDetail{Code: 500, Message: err.Error(), Status: "INTERNAL"},
+		}, http.StatusInternalServerError)
 		return
 	}
-
 	log = log.With("taskId", taskID)
 	log.Info("task created, polling for result")
 
@@ -124,6 +146,7 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 	// 等待任务结果
 	select {
 	case result := <-resultCh:
+		start := time.Now()
 		if result.Error != nil {
 			log.Error("task failed", "err", result.Error)
 			var tErr *kieai.TaskFailedError
@@ -134,6 +157,7 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 				gErr, _ := transformer.ToGoogleError(500, result.Error.Error())
 				h.writeSSEError(w, gErr, 500)
 			}
+			h.router.RecordResult(ch.Name(), false, time.Since(start).Milliseconds())
 			return
 		}
 
@@ -142,6 +166,7 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 			log.Error("task succeeded but no result URLs")
 			gErr, _ := transformer.ToGoogleError(500, "no result URLs")
 			h.writeSSEError(w, gErr, 500)
+			h.router.RecordResult(ch.Name(), false, time.Since(start).Milliseconds())
 			return
 		}
 
@@ -151,12 +176,14 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 			log.Error("response transform failed", "err", err)
 			gErr, _ := transformer.ToGoogleError(500, err.Error())
 			h.writeSSEError(w, gErr, 500)
+			h.router.RecordResult(ch.Name(), false, time.Since(start).Milliseconds())
 			return
 		}
 
 		// 发送最终结果
 		h.writeSSEData(w, flusher, googleResp)
 		h.writeSSEEvent(w, flusher, "data: [DONE]\n\n")
+		h.router.RecordResult(ch.Name(), true, time.Since(start).Milliseconds())
 
 	case <-ctx.Done():
 		log.Info("request cancelled")
@@ -258,64 +285,48 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Transform Google request → KIE.AI request
-	kieaiReq, err := h.reqTransformer.Transform(ctx, &googleReq, googleModel)
+	// Get channel from router
+	ch, err := h.router.RouteForModel(googleModel)
 	if err != nil {
-		log.Warn("request transform failed", "err", err)
-		gErr, code := transformer.ToGoogleError(422, err.Error())
-		writeGoogleError(w, gErr, code)
+		log.Error("router error", "err", err)
+		writeGoogleError(w, model.GoogleError{
+			Error: model.GoogleErrorDetail{Code: 503, Message: "no healthy channels", Status: "UNAVAILABLE"},
+		}, http.StatusServiceUnavailable)
 		return
 	}
+	log = log.With("channel", ch.Name())
 
-	log = log.With("kieaiModel", kieaiReq.Model)
-
-	// Submit task to KIE.AI
-	taskID, err := h.client.CreateTask(ctx, apiKey, kieaiReq)
+	// Submit task via channel
+	taskID, err := ch.SubmitTask(ctx, apiKey, &googleReq, googleModel)
 	if err != nil {
-		log.Error("createTask failed", "err", err)
-		code := resolveKieAIErrorCode(err)
-		gErr, httpCode := transformer.ToGoogleError(code, err.Error())
-		writeGoogleError(w, gErr, httpCode)
+		log.Error("submitTask failed", "err", err)
+		writeGoogleError(w, model.GoogleError{
+			Error: model.GoogleErrorDetail{Code: 500, Message: err.Error(), Status: "INTERNAL"},
+		}, http.StatusInternalServerError)
 		return
 	}
-
 	log = log.With("taskId", taskID)
-	log.Info("task created, submitting to worker pool")
+	log.Info("task created, polling for result")
 
-	// Submit to worker pool for polling
-	result, err := h.taskManager.SubmitTask(ctx, apiKey, taskID)
+	start := time.Now()
+
+	// Poll for result via channel
+	googleResp, err := ch.PollTask(ctx, apiKey, taskID)
 	if err != nil {
 		log.Error("poll failed", "err", err)
 		var tErr *kieai.TaskFailedError
 		if errors.As(err, &tErr) {
 			gErr, httpCode := transformer.ToGoogleError(500, tErr.Reason)
 			writeGoogleError(w, gErr, httpCode)
-			return
+		} else {
+			gErr, httpCode := transformer.ToGoogleError(500, err.Error())
+			writeGoogleError(w, gErr, httpCode)
 		}
-		gErr, httpCode := transformer.ToGoogleError(500, err.Error())
-		writeGoogleError(w, gErr, httpCode)
+		h.router.RecordResult(ch.Name(), false, time.Since(start).Milliseconds())
 		return
 	}
 
-	record := result.Record
-
-	if record.ResultJSON() == nil || len(record.ResultJSON().ResultURLs) == 0 {
-		log.Error("task succeeded but no result URLs")
-		gErr, httpCode := transformer.ToGoogleError(500, "no result URLs in successful task")
-		writeGoogleError(w, gErr, httpCode)
-		return
-	}
-
-	log.Info("task completed", "imageCount", len(record.ResultJSON().ResultURLs))
-
-	// Transform KIE.AI result → Google response
-	googleResp, err := h.respTransformer.ToGoogleResponse(ctx, record.ResultJSON().ResultURLs)
-	if err != nil {
-		log.Error("response transform failed", "err", err)
-		gErr, httpCode := transformer.ToGoogleError(500, err.Error())
-		writeGoogleError(w, gErr, httpCode)
-		return
-	}
+	h.router.RecordResult(ch.Name(), true, time.Since(start).Milliseconds())
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -337,14 +348,6 @@ func writeGoogleError(w http.ResponseWriter, e model.GoogleError, httpCode int) 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(httpCode)
 	json.NewEncoder(w).Encode(e)
-}
-
-func resolveKieAIErrorCode(err error) int {
-	var kErr *kieai.ErrKieAI
-	if errors.As(err, &kErr) {
-		return kErr.Code
-	}
-	return 500
 }
 
 func generateRequestID() string {
