@@ -22,212 +22,195 @@ function Panel({ children }: { children: React.ReactNode }) {
   );
 }
 
-function FormGroup({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
+function TokenDisplay({ token }: { token: string }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    await navigator.clipboard.writeText(token);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
   return (
-    <div style={{ marginBottom: 12 }}>
-      <label
+    <div style={{ marginTop: 16 }}>
+      <div
         style={{
-          display: "block",
-          color: "var(--text2)",
+          padding: "12px",
+          background: "var(--bg)",
+          borderRadius: 4,
+          wordBreak: "break-all",
           fontSize: 11,
-          marginBottom: 4,
-          textTransform: "uppercase",
-          letterSpacing: "0.05em",
+          color: "var(--green)",
+          lineHeight: 1.6,
+          border: "1px solid var(--border)",
+          marginBottom: 8,
         }}
       >
-        {label}
-      </label>
-      {children}
+        {token}
+      </div>
+      <button
+        onClick={copy}
+        style={{
+          padding: "5px 12px",
+          background: "transparent",
+          border: "1px solid var(--border)",
+          borderRadius: 4,
+          color: copied ? "var(--green)" : "var(--text2)",
+          fontSize: 11,
+          cursor: "pointer",
+        }}
+      >
+        {copied ? "✓ 已复制" : "复制"}
+      </button>
     </div>
   );
 }
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "8px 12px",
-  background: "var(--bg)",
-  border: "1px solid var(--border)",
-  borderRadius: 4,
-  color: "var(--text)",
-  fontSize: 12,
-  outline: "none",
-};
 
 export default function ToolsPage() {
   const { data: statsData } = useSWR<StatsResponse>("/admin/stats", fetcher);
   const channelNames = statsData ? Object.keys(statsData) : [];
 
-  const [subject, setSubject] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [channel, setChannel] = useState("");
-  const [token, setToken] = useState("");
-  const [tokenError, setTokenError] = useState("");
-  const [issuingToken, setIssuingToken] = useState(false);
-  const [copied, setCopied] = useState(false);
+  // Quick token
+  const [quickToken, setQuickToken] = useState("");
+  const [quickError, setQuickError] = useState("");
+  const [quickLoading, setQuickLoading] = useState(false);
 
-  async function handleIssueToken(e: React.FormEvent) {
-    e.preventDefault();
-    setIssuingToken(true);
-    setToken("");
-    setTokenError("");
+  async function handleQuickToken() {
+    setQuickLoading(true);
+    setQuickToken("");
+    setQuickError("");
     try {
-      const result = await api.issueToken({
-        subject,
-        api_key: apiKey,
-        channel: channel || undefined,
-      });
-      setToken(result.token);
-    } catch (err) {
-      setTokenError((err as Error).message);
+      const res = await api.quickToken();
+      setQuickToken(res.token);
+    } catch (e) {
+      setQuickError((e as Error).message);
     } finally {
-      setIssuingToken(false);
+      setQuickLoading(false);
     }
   }
 
-  async function copyToken() {
-    if (!token) return;
-    await navigator.clipboard.writeText(token);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  // Advanced token
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [subject, setSubject] = useState("user");
+  const [channel, setChannel] = useState("");
+  const [advToken, setAdvToken] = useState("");
+  const [advError, setAdvError] = useState("");
+  const [advLoading, setAdvLoading] = useState(false);
+
+  async function handleAdvanced(e: React.FormEvent) {
+    e.preventDefault();
+    setAdvLoading(true);
+    setAdvToken("");
+    setAdvError("");
+    try {
+      const res = await api.issueToken({ subject, channel: channel || undefined });
+      setAdvToken(res.token);
+    } catch (e) {
+      setAdvError((e as Error).message);
+    } finally {
+      setAdvLoading(false);
+    }
   }
+
+  const inputStyle: React.CSSProperties = {
+    width: "100%",
+    padding: "8px 12px",
+    background: "var(--bg)",
+    border: "1px solid var(--border)",
+    borderRadius: 4,
+    color: "var(--text)",
+    fontSize: 12,
+    outline: "none",
+    boxSizing: "border-box",
+  };
 
   return (
     <div>
       <PageTitle>工具</PageTitle>
 
-      {/* JWT Issue */}
+      {/* Quick token */}
       <Panel>
-        <SectionTitle>颁发 JWT Token</SectionTitle>
-        <form onSubmit={handleIssueToken}>
-          <FormGroup label="Subject (sub)">
-            <input
-              style={inputStyle}
-              type="text"
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-              placeholder="user-123"
-              required
-            />
-          </FormGroup>
-          <FormGroup label="API Key">
-            <input
-              style={inputStyle}
-              type="text"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="kie_xxxxxxxx"
-              required
-            />
-          </FormGroup>
-          <FormGroup label="Channel（可选，空=不限制所有渠道）">
-            <select
-              style={inputStyle}
-              value={channel}
-              onChange={(e) => setChannel(e.target.value)}
-            >
-              <option value="">不限制（超级 Token）</option>
-              {channelNames.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
-          </FormGroup>
+        <SectionTitle>生成 Token</SectionTitle>
+        <p style={{ color: "var(--text3)", fontSize: 12, marginBottom: 16 }}>
+          生成用于调用图片生成接口的 JWT Token，账号由 goloop 自动从池中选取。
+        </p>
+        <button
+          onClick={handleQuickToken}
+          disabled={quickLoading}
+          style={{
+            padding: "8px 20px",
+            background: quickLoading ? "rgba(88,166,255,0.4)" : "var(--blue)",
+            border: "none",
+            borderRadius: 6,
+            color: "white",
+            fontSize: 13,
+            fontWeight: "bold",
+            cursor: quickLoading ? "not-allowed" : "pointer",
+          }}
+        >
+          {quickLoading ? "生成中…" : "生成 Token"}
+        </button>
 
-          <button
-            type="submit"
-            disabled={issuingToken}
-            style={{
-              padding: "8px 18px",
-              background: issuingToken ? "rgba(88,166,255,0.4)" : "var(--blue)",
-              border: "none",
-              borderRadius: 6,
-              color: "white",
-              fontSize: 12,
-              cursor: issuingToken ? "not-allowed" : "pointer",
-              fontWeight: "bold",
-            }}
-          >
-            {issuingToken ? "生成中…" : "生成 Token"}
-          </button>
-        </form>
-
-        {token && (
-          <div style={{ marginTop: 16 }}>
-            <div
-              style={{
-                padding: "12px",
-                background: "var(--bg)",
-                borderRadius: 4,
-                wordBreak: "break-all",
-                fontSize: 11,
-                color: "var(--green)",
-                lineHeight: 1.6,
-                border: "1px solid var(--border)",
-                marginBottom: 8,
-              }}
-            >
-              {token}
-            </div>
-            <button
-              onClick={copyToken}
-              style={{
-                padding: "5px 12px",
-                background: "transparent",
-                border: "1px solid var(--border)",
-                borderRadius: 4,
-                color: copied ? "var(--green)" : "var(--text2)",
-                fontSize: 11,
-                cursor: "pointer",
-              }}
-            >
-              {copied ? "✓ 已复制" : "复制"}
-            </button>
-          </div>
-        )}
-
-        {tokenError && (
-          <div
-            style={{
-              marginTop: 12,
-              padding: "8px 12px",
-              background: "rgba(248,81,73,0.1)",
-              borderRadius: 4,
-              color: "var(--red)",
-              fontSize: 12,
-            }}
-          >
-            错误：{tokenError}
+        {quickToken && <TokenDisplay token={quickToken} />}
+        {quickError && (
+          <div style={{ marginTop: 12, color: "var(--red)", fontSize: 12 }}>
+            错误：{quickError}
           </div>
         )}
       </Panel>
 
-      {/* Bulk operations */}
+      {/* Advanced */}
       <Panel>
-        <SectionTitle>批量操作</SectionTitle>
-        <p style={{ color: "var(--text3)", fontSize: 12, marginBottom: 12 }}>
-          对所有渠道和账号执行批量操作
-        </p>
-        <button
-          onClick={() => window.location.reload()}
-          style={{
-            padding: "6px 14px",
-            background: "transparent",
-            border: "1px solid var(--border)",
-            borderRadius: 6,
-            color: "var(--text2)",
-            fontSize: 12,
-            cursor: "pointer",
-          }}
+        <div
+          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
+          onClick={() => setShowAdvanced((v) => !v)}
         >
-          🔄 刷新所有状态
-        </button>
+          <SectionTitle>高级：自定义 Token</SectionTitle>
+          <span style={{ color: "var(--text3)", fontSize: 12 }}>{showAdvanced ? "▲ 收起" : "▼ 展开"}</span>
+        </div>
+
+        {showAdvanced && (
+          <form onSubmit={handleAdvanced} style={{ marginTop: 16 }}>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: "block", color: "var(--text2)", fontSize: 11, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                Subject (sub)
+              </label>
+              <input style={inputStyle} type="text" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="user-123" required />
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: "block", color: "var(--text2)", fontSize: 11, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                Channel（可选，限定只能用指定渠道）
+              </label>
+              <select style={inputStyle} value={channel} onChange={(e) => setChannel(e.target.value)}>
+                <option value="">不限制（所有渠道）</option>
+                {channelNames.map((name) => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+            </div>
+            <button
+              type="submit"
+              disabled={advLoading}
+              style={{
+                padding: "8px 18px",
+                background: advLoading ? "rgba(88,166,255,0.4)" : "var(--blue)",
+                border: "none",
+                borderRadius: 6,
+                color: "white",
+                fontSize: 12,
+                cursor: advLoading ? "not-allowed" : "pointer",
+                fontWeight: "bold",
+              }}
+            >
+              {advLoading ? "生成中…" : "生成 Token"}
+            </button>
+
+            {advToken && <TokenDisplay token={advToken} />}
+            {advError && (
+              <div style={{ marginTop: 12, color: "var(--red)", fontSize: 12 }}>
+                错误：{advError}
+              </div>
+            )}
+          </form>
+        )}
       </Panel>
     </div>
   );

@@ -60,6 +60,18 @@ func (a *kieAccount) RecordSuccess() {
 	a.healthy = true
 }
 
+func (a *kieAccount) ConsecutiveFailures() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.failCount
+}
+
+func (a *kieAccount) SetWeight(weight int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.weight = weight
+}
+
 // AccountPool manages KIE.AI accounts with weighted random selection.
 type AccountPool struct {
 	mu       sync.RWMutex
@@ -129,12 +141,33 @@ func (p *AccountPool) List() []Account {
 	return ret
 }
 
+// listRaw returns direct pointers to internal accounts (for admin use only).
+func (p *AccountPool) listRaw() []*kieAccount {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	ret := make([]*kieAccount, len(p.accounts))
+	copy(ret, p.accounts)
+	return ret
+}
+
 func (p *AccountPool) Remove(apiKey string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for i, acc := range p.accounts {
 		if acc.APIKey() == apiKey {
 			p.accounts = append(p.accounts[:i], p.accounts[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+func (p *AccountPool) SetWeight(apiKey string, weight int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, acc := range p.accounts {
+		if acc.APIKey() == apiKey {
+			acc.SetWeight(weight)
 			return true
 		}
 	}

@@ -1,7 +1,8 @@
 "use client";
 
+import { useRef, useState } from "react";
 import useSWR from "swr";
-import { fetcher } from "@/lib/api";
+import { api, fetcher } from "@/lib/api";
 import type { StatsResponse } from "@/lib/types";
 import { PageTitle } from "@/components/PageTitle";
 import Link from "next/link";
@@ -19,7 +20,27 @@ export default function ChannelsPage() {
     { refreshInterval: 10000 }
   );
 
+  const [editingChannel, setEditingChannel] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
   const channels = data ? Object.entries(data) : [];
+
+  async function saveWeight(channel: string, value: string) {
+    const weight = parseInt(value, 10);
+    if (!weight || weight <= 0) {
+      setEditingChannel(null);
+      return;
+    }
+    try {
+      await api.updateChannelWeight(channel, weight);
+      setFeedback(`渠道 ${channel} 权重已更新为 ${weight}`);
+      mutate();
+    } catch (e) {
+      setFeedback(`更新失败：${(e as Error).message}`);
+    }
+    setEditingChannel(null);
+  }
 
   return (
     <div>
@@ -48,6 +69,23 @@ export default function ChannelsPage() {
         </button>
       </div>
 
+      {feedback && (
+        <div
+          style={{
+            padding: "8px 12px",
+            borderRadius: 4,
+            background: feedback.includes("失败")
+              ? "rgba(248,81,73,0.1)"
+              : "rgba(46,160,67,0.1)",
+            color: feedback.includes("失败") ? "var(--red)" : "var(--green)",
+            fontSize: 12,
+            marginBottom: 16,
+          }}
+        >
+          {feedback}
+        </div>
+      )}
+
       {isLoading && <p style={{ color: "var(--text3)" }}>加载中…</p>}
       {error && (
         <p style={{ color: "var(--red)" }}>
@@ -67,7 +105,7 @@ export default function ChannelsPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr>
-                {["渠道名称", "状态", "健康分", "成功次数", "失败次数", "平均延迟", "操作"].map(
+                {["渠道名称", "权重", "状态", "健康分", "成功次数", "失败次数", "平均延迟", "操作"].map(
                   (h) => (
                     <th
                       key={h}
@@ -103,6 +141,42 @@ export default function ChannelsPage() {
                     }}
                   >
                     {name}
+                  </td>
+                  <td style={{ padding: "12px 16px" }}>
+                    {editingChannel === name ? (
+                      <input
+                        ref={inputRef}
+                        type="number"
+                        min={1}
+                        defaultValue={stats.weight}
+                        autoFocus
+                        style={{
+                          width: 64,
+                          padding: "2px 6px",
+                          border: "1px solid var(--blue)",
+                          borderRadius: 4,
+                          background: "var(--card)",
+                          color: "var(--text)",
+                          fontSize: 12,
+                        }}
+                        onBlur={(e) => saveWeight(name, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") e.currentTarget.blur();
+                          if (e.key === "Escape") setEditingChannel(null);
+                        }}
+                      />
+                    ) : (
+                      <span
+                        style={{ cursor: "pointer", color: "var(--blue)" }}
+                        onClick={() => {
+                          setEditingChannel(name);
+                          setTimeout(() => inputRef.current?.select(), 0);
+                        }}
+                        title="点击修改权重"
+                      >
+                        {stats.weight}
+                      </span>
+                    )}
                   </td>
                   <td style={{ padding: "12px 16px" }}>
                     <span
@@ -169,7 +243,7 @@ export default function ChannelsPage() {
               {channels.length === 0 && (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={8}
                     style={{
                       padding: "24px 16px",
                       color: "var(--text3)",

@@ -82,6 +82,10 @@ export const api = {
     });
   },
 
+  quickToken(): Promise<IssueTokenResponse> {
+    return request<IssueTokenResponse>("/admin/quick-token", { method: "POST", body: "{}" });
+  },
+
   resetAccount(channel: string, accountId: string): Promise<void> {
     return request<void>(
       `/admin/channel/${channel}/accounts/${accountId}/reset`,
@@ -101,6 +105,20 @@ export const api = {
       `/admin/channel/${channel}/accounts/${accountId}/probe`,
       { method: "POST" }
     );
+  },
+
+  updateAccountWeight(channel: string, accountId: string, weight: number): Promise<void> {
+    return request<void>(
+      `/admin/channel/${channel}/accounts/${accountId}/weight`,
+      { method: "POST", body: JSON.stringify({ weight }) }
+    );
+  },
+
+  updateChannelWeight(channel: string, weight: number): Promise<void> {
+    return request<void>("/admin/channel-weight", {
+      method: "POST",
+      body: JSON.stringify({ channel, weight }),
+    });
   },
 
   /** Verify the current admin key by calling a protected endpoint. */

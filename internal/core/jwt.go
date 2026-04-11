@@ -18,7 +18,6 @@ const contextKeyClaims contextKey = "jwt_claims"
 // JWTClaims represents the claims embedded in the JWT.
 type JWTClaims struct {
     jwt.RegisteredClaims
-    APIKey  string `json:"api_key,omitempty"`
     Channel string `json:"channel,omitempty"`
     Quota   int64  `json:"quota,omitempty"`
 }
@@ -37,7 +36,9 @@ func (j *JWTIssuer) Issue(claims *JWTClaims) (string, error) {
     if claims.Subject == "" {
         return "", errors.New("jwt: subject is required")
     }
-    if claims.ExpiresAt == nil {
+    // Only set default expiry if caller did not explicitly set ExpiresAt.
+    // Pass a zero-value *jwt.NumericDate (not nil) to opt out of expiry.
+    if claims.ExpiresAt == nil && j.expiry > 0 {
         claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(j.expiry))
     }
     token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

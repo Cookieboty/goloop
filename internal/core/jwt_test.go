@@ -15,7 +15,6 @@ func TestJWTLifecycle(t *testing.T) {
 
     claims := &JWTClaims{
         RegisteredClaims: jwt.RegisteredClaims{Subject: "user-123"},
-        APIKey:            "kieai-key-abc",
         Channel:           "kieai",
     }
     token, err := issuer.Issue(claims)
@@ -25,7 +24,7 @@ func TestJWTLifecycle(t *testing.T) {
     parsed, err := issuer.Validate(token)
     if err != nil { t.Fatalf("Validate error: %v", err) }
     if parsed.Subject != "user-123" { t.Errorf("subject mismatch") }
-    if parsed.APIKey != "kieai-key-abc" { t.Errorf("apiKey mismatch") }
+    if parsed.Channel != "kieai" { t.Errorf("channel mismatch") }
 
     // Invalid token
     _, err = issuer.Validate("invalid")
@@ -54,7 +53,6 @@ func TestJWTMiddleware_ValidToken(t *testing.T) {
     issuer := NewJWTIssuer("secret", 1*time.Hour)
     token, _ := issuer.Issue(&JWTClaims{
         RegisteredClaims: jwt.RegisteredClaims{Subject: "u1"},
-        APIKey:            "key1",
     })
 
     var captured *JWTClaims

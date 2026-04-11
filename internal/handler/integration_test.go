@@ -52,7 +52,7 @@ func setupIntegrationTest(t *testing.T, kieaiHandler http.Handler, cdnResultURL 
 	// Create kieai channel for testing
 	pool := kieai.NewAccountPool()
 	pool.AddAccount("test-key", 100)
-	ch := kieai.NewChannel(kieaiSrv.URL, pool, kieai.Config{
+	ch := kieai.NewChannel(kieaiSrv.URL, 100, pool, kieai.Config{
 		BaseURL:         kieaiSrv.URL,
 		Timeout:         10 * time.Second,
 		InitialInterval: 10 * time.Millisecond,
@@ -128,7 +128,7 @@ func TestIntegration_TextToImage_Success(t *testing.T) {
 	// Issue JWT token for the request
 	token, _ := issuer.Issue(&core.JWTClaims{
 		RegisteredClaims: jwt.RegisteredClaims{Subject: "test-user"},
-		APIKey:  "test-api-key",
+		
 		Channel: "kieai",
 	})
 

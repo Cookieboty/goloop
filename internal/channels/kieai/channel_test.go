@@ -21,7 +21,7 @@ func TestKIEAIChannel_SubmitTask(t *testing.T) {
 
 	pool := NewAccountPool()
 	pool.AddAccount("test-key", 100)
-	ch := NewChannel(srv.URL, pool, Config{BaseURL: srv.URL})
+	ch := NewChannel(srv.URL, 100, pool, Config{BaseURL: srv.URL})
 
 	if ch.Name() != "kieai" {
 		t.Errorf("Name mismatch")
@@ -30,7 +30,7 @@ func TestKIEAIChannel_SubmitTask(t *testing.T) {
 		t.Errorf("IsAvailable should be true")
 	}
 
-	taskID, err := ch.SubmitTask(context.Background(), "test-key",
+	taskID, _, err := ch.SubmitTask(context.Background(),
 		&model.GoogleRequest{Contents: []model.Content{{Parts: []model.Part{{Text: "test"}}}}},
 		"gemini-3.1-flash-image-preview")
 	if err != nil {
@@ -55,7 +55,7 @@ func TestKIEAIChannel_Probe(t *testing.T) {
 
 	pool := NewAccountPool()
 	pool.AddAccount("test-key", 100)
-	ch := NewChannel(srv.URL, pool, Config{BaseURL: srv.URL})
+	ch := NewChannel(srv.URL, 100, pool, Config{BaseURL: srv.URL})
 
 	acc := pool.List()[0]
 	if !ch.Probe(acc) {

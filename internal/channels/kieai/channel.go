@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"goloop/internal/model"
@@ -38,6 +39,7 @@ func defaultConfig(baseURL string) Config {
 type Channel struct {
 	name          string
 	baseURL       string
+	weight        atomic.Int64
 	httpClient    *http.Client
 	pool          *AccountPool
 	reqTransform  *RequestTransformer
@@ -46,7 +48,7 @@ type Channel struct {
 }
 
 // NewChannel creates a new KIE.AI channel plugin.
-func NewChannel(baseURL string, pool *AccountPool, cfg Config) *Channel {
+func NewChannel(baseURL string, weight int, pool *AccountPool, cfg Config) *Channel {
 	if cfg.InitialInterval == 0 {
 		cfg = defaultConfig(baseURL)
 	}
@@ -57,6 +59,7 @@ func NewChannel(baseURL string, pool *AccountPool, cfg Config) *Channel {
 		pool:       pool,
 		cfg:        cfg,
 	}
+	ch.weight.Store(int64(weight))
 
 	modelMapping := map[string]ModelDefaults{
 		"gemini-3.1-flash-image-preview": {KieAIModel: "nano-banana-2", AspectRatio: "1:1", Resolution: "1K", OutputFormat: "png"},
@@ -68,7 +71,9 @@ func NewChannel(baseURL string, pool *AccountPool, cfg Config) *Channel {
 	return ch
 }
 
-func (ch *Channel) Name() string                                              { return ch.name }
+func (ch *Channel) Name() string { return ch.name }
+func (ch *Channel) Weight() int  { return int(ch.weight.Load()) }
+func (ch *Channel) SetChannelWeight(weight int) { ch.weight.Store(int64(weight)) }
 func (ch *Channel) IsAvailable() bool                                          { return ch.pool != nil && len(ch.pool.List()) > 0 }
 func (ch *Channel) HealthScore() float64 {
 	accounts := ch.pool.List()
@@ -82,41 +87,47 @@ func (ch *Channel) HealthScore() float64 {
 	return total / float64(len(accounts))
 }
 
-func (ch *Channel) Generate(ctx context.Context, apiKey string, req *model.GoogleRequest, modelName string) (*model.GoogleResponse, error) {
+func (ch *Channel) Generate(ctx context.Context, req *model.GoogleRequest, modelName string) (*model.GoogleResponse, error) {
 	return nil, fmt.Errorf("kieai: Generate not supported, use SubmitTask + PollTask")
 }
 
-func (ch *Channel) SubmitTask(ctx context.Context, apiKey string, req *model.GoogleRequest, modelName string) (string, error) {
+func (ch *Channel) SubmitTask(ctx context.Context, req *model.GoogleRequest, modelName string) (string, string, error) {
+	acc, err := ch.pool.Select()
+	if err != nil {
+		return "", "", fmt.Errorf("kieai: no account available: %w", err)
+	}
+	acc.IncUsage()
+
 	kieReq, err := ch.reqTransform.Transform(ctx, req, modelName)
 	if err != nil {
-		return "", fmt.Errorf("kieai: transform: %w", err)
+		return "", "", fmt.Errorf("kieai: transform: %w", err)
 	}
 
 	body, err := json.Marshal(kieReq)
 	if err != nil {
-		return "", fmt.Errorf("kieai: marshal: %w", err)
+		return "", "", fmt.Errorf("kieai: marshal: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		ch.baseURL+"/api/v1/jobs/createTask", bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Authorization", "Bearer "+acc.APIKey())
 
 	resp, err := ch.httpClient.Do(httpReq)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer resp.Body.Close()
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("kieai: HTTP %d: %s", resp.StatusCode, string(data))
+		return "", "", fmt.Errorf("kieai: HTTP %d: %s", resp.StatusCode, string(data))
 	}
 
 	var result struct {
@@ -126,12 +137,12 @@ func (ch *Channel) SubmitTask(ctx context.Context, apiKey string, req *model.Goo
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if result.Data.TaskID == "" {
-		return "", fmt.Errorf("kieai: empty taskId")
+		return "", "", fmt.Errorf("kieai: empty taskId")
 	}
-	return result.Data.TaskID, nil
+	return result.Data.TaskID, acc.APIKey(), nil
 }
 
 func (ch *Channel) PollTask(ctx context.Context, apiKey, taskID string) (*model.GoogleResponse, error) {
@@ -234,4 +245,70 @@ func (ch *Channel) Probe(account Account) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// SetWeight updates the weight of an account in the pool.
+func (ch *Channel) SetWeight(apiKey string, weight int) bool {
+	if ch.pool == nil {
+		return false
+	}
+	return ch.pool.SetWeight(apiKey, weight)
+}
+
+// ListAccounts returns all accounts in the pool as admin-facing maps.
+func (ch *Channel) ListAccounts() []map[string]any {
+	if ch.pool == nil {
+		return nil
+	}
+	accounts := ch.pool.listRaw()
+	result := make([]map[string]any, len(accounts))
+	for i, acc := range accounts {
+		status := "healthy"
+		if !acc.IsHealthy() {
+			status = "unhealthy"
+		} else if acc.HealthScore() < 0.6 {
+			status = "degraded"
+		}
+		result[i] = map[string]any{
+			"api_key":              acc.APIKey(),
+			"weight":               acc.Weight(),
+			"status":               status,
+			"usage_count":          acc.UsageCount(),
+			"health_score":         acc.HealthScore(),
+			"consecutive_failures": acc.ConsecutiveFailures(),
+		}
+	}
+	return result
+}
+
+// ResetAccount resets failure counters for an account.
+func (ch *Channel) ResetAccount(apiKey string) bool {
+	if ch.pool == nil {
+		return false
+	}
+	for _, acc := range ch.pool.List() {
+		if acc.APIKey() == apiKey {
+			acc.RecordSuccess()
+			return true
+		}
+	}
+	return false
+}
+
+// RetireAccount removes an account from the pool.
+func (ch *Channel) RetireAccount(apiKey string) bool {
+	if ch.pool == nil {
+		return false
+	}
+	return ch.pool.Remove(apiKey)
+}
+
+// ProbeAccount sends a health probe for a specific account.
+func (ch *Channel) ProbeAccount(apiKey string) bool {
+	for _, acc := range ch.pool.List() {
+		if acc.APIKey() == apiKey {
+			return ch.Probe(acc)
+		}
+	}
+	return false
 }

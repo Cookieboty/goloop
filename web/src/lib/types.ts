@@ -1,4 +1,5 @@
 export interface ChannelStats {
+  weight: number;
   is_healthy: boolean;
   health_score: number;
   total_success: number;
@@ -25,7 +26,6 @@ export interface ChannelAccountsResponse {
 
 export interface IssueTokenRequest {
   subject: string;
-  api_key: string;
   channel?: string;
 }
 

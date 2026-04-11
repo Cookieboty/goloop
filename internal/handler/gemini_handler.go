@@ -78,23 +78,13 @@ func (h *GeminiHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleProtected is called by JWTMiddleware after JWT validation succeeds.
-// It injects the JWT api_key into the request header and the channel restriction
-// into the context, then delegates to handleGenerateContent.
+// JWT only carries channel restriction (optional). Account selection is done
+// internally by the channel's pool.
 func (h *GeminiHandler) handleProtected(ctx context.Context, claims *core.JWTClaims, w http.ResponseWriter, r *http.Request) {
-	// Use the API key embedded in the JWT if present.
-	// This avoids clients having to pass x-goog-api-key separately.
-	if claims.APIKey != "" {
-		r = r.Clone(ctx)
-		r.Header.Set("x-goog-api-key", claims.APIKey)
-	}
-
-	// If the JWT specifies a channel restriction, inject it into context
-	// so the router honours it.
 	if claims.Channel != "" {
 		ctx = core.WithChannelRestriction(ctx, claims.Channel)
 		r = r.WithContext(ctx)
 	}
-
 	h.handleGenerateContent(w, r)
 }
 
@@ -106,7 +96,7 @@ func isStreamingRequest(r *http.Request) bool {
 }
 
 // handleGenerateContentStreaming handles SSE streaming responses.
-func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r *http.Request, googleModel, apiKey string, googleReq *model.GoogleRequest, requestID string) {
+func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r *http.Request, googleModel string, googleReq *model.GoogleRequest, requestID string) {
 	ctx := r.Context()
 	log := slog.With("requestId", requestID, "googleModel", googleModel)
 
@@ -120,7 +110,7 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 	}
 	log = log.With("channel", ch.Name())
 
-	taskID, err := ch.SubmitTask(ctx, apiKey, googleReq, googleModel)
+	taskID, apiKey, err := ch.SubmitTask(ctx, googleReq, googleModel)
 	if err != nil {
 		log.Error("submitTask failed", "err", err)
 		h.writeSSEError(w, model.GoogleError{
@@ -240,18 +230,6 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 	requestID := generateRequestID()
 	log := slog.With("requestId", requestID, "googleModel", googleModel)
 
-	// API key resolution order:
-	// 1. x-goog-api-key header (set by handleProtected from JWT claims.APIKey)
-	// 2. x-goog-api-key header passed directly by the client
-	// The JWT itself is NOT used as the upstream API key.
-	apiKey := r.Header.Get("x-goog-api-key")
-	if apiKey == "" {
-		writeGoogleError(w, model.GoogleError{
-			Error: model.GoogleErrorDetail{Code: 401, Message: "API key not provided", Status: "UNAUTHENTICATED"},
-		}, http.StatusUnauthorized)
-		return
-	}
-
 	limited := io.LimitReader(r.Body, maxRequestBodyBytes+1)
 	bodyBytes, err := io.ReadAll(limited)
 	if err != nil {
@@ -278,7 +256,7 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 	}
 
 	if isStreamingRequest(r) {
-		h.handleGenerateContentStreaming(w, r, googleModel, apiKey, &googleReq, requestID)
+		h.handleGenerateContentStreaming(w, r, googleModel, &googleReq, requestID)
 		return
 	}
 
@@ -293,7 +271,7 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 	}
 	log = log.With("channel", ch.Name())
 
-	taskID, err := ch.SubmitTask(ctx, apiKey, &googleReq, googleModel)
+	taskID, apiKey, err := ch.SubmitTask(ctx, &googleReq, googleModel)
 	if err != nil {
 		log.Error("submitTask failed", "err", err)
 		writeGoogleError(w, model.GoogleError{

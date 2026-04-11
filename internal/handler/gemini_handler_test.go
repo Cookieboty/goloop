@@ -5,6 +5,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"goloop/internal/core"
 )
 
 func TestHandleHealth(t *testing.T) {
@@ -21,10 +24,11 @@ func TestHandleHealth(t *testing.T) {
 	}
 }
 
-func TestMissingAPIKey_Returns401(t *testing.T) {
+func TestMissingJWT_Returns401(t *testing.T) {
 	mux := http.NewServeMux()
-	h := &GeminiHandler{}
-	mux.HandleFunc("POST /v1beta/models/", h.handleGenerateContent)
+	h := &GeminiHandler{issuer: core.NewJWTIssuer("secret", time.Hour)}
+	protected := core.NewJWTMiddleware(h.issuer, h.handleProtected)
+	mux.Handle("POST /v1beta/models/", protected)
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/v1beta/models/gemini-3.1-flash-image-preview:generateContent",

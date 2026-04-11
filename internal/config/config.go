@@ -44,6 +44,7 @@ type HealthConfig struct {
 type ChannelConfig struct {
 	Type            string
 	BaseURL         string
+	Weight          int
 	Timeout         time.Duration
 	InitialInterval time.Duration
 	MaxInterval     time.Duration
@@ -138,6 +139,7 @@ func loadChannelFromEnv(name string) (ChannelConfig, bool) {
 	return ChannelConfig{
 		Type:            chType,
 		BaseURL:         baseURL,
+		Weight:          getEnvInt(pfx+"WEIGHT", 100),
 		Timeout:         getEnvDuration(pfx+"TIMEOUT", "120s"),
 		InitialInterval: getEnvDuration(pfx+"INITIAL_INTERVAL", "2s"),
 		MaxInterval:     getEnvDuration(pfx+"MAX_INTERVAL", "10s"),
@@ -235,6 +237,7 @@ func Load() (*Config, error) {
 			kieCh := ChannelConfig{
 				Type:            "kieai",
 				BaseURL:         kieBaseURL,
+				Weight:          getEnvInt("KIEAI_WEIGHT", 100),
 				Timeout:         getEnvDuration("KIEAI_TIMEOUT", "120s"),
 				InitialInterval: getEnvDuration("POLLER_INITIAL_INTERVAL", "2s"),
 				MaxInterval:     getEnvDuration("POLLER_MAX_INTERVAL", "10s"),

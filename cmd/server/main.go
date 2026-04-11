@@ -66,7 +66,7 @@ func main() {
 			if timeout == 0 {
 				timeout = 120 * time.Second
 			}
-			kieCh := kieai.NewChannel(chCfg.BaseURL, pool, kieai.Config{
+			kieCh := kieai.NewChannel(chCfg.BaseURL, chCfg.Weight, pool, kieai.Config{
 				BaseURL:         chCfg.BaseURL,
 				Timeout:         timeout,
 				InitialInterval: chCfg.InitialInterval,

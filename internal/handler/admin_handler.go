@@ -31,9 +31,11 @@ func NewAdminHandler(issuer *core.JWTIssuer, registry *core.PluginRegistry, heal
 
 func (h *AdminHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/issue-token", h.requireAuth(h.handleIssueToken))
+	mux.HandleFunc("POST /admin/quick-token", h.requireAuth(h.handleQuickToken))
 	mux.HandleFunc("GET /admin/stats", h.requireAuth(h.handleStats))
 	mux.HandleFunc("GET /admin/channel/", h.requireAuth(h.handleChannelAccounts))
 	mux.HandleFunc("POST /admin/channel/", h.requireAuth(h.handleChannelOp))
+	mux.HandleFunc("POST /admin/channel-weight", h.requireAuth(h.handleChannelWeight))
 }
 
 // requireAuth wraps a handler with admin password authentication.
@@ -77,7 +79,6 @@ func (h *AdminHandler) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 func (h *AdminHandler) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Subject string `json:"subject"`
-		APIKey  string `json:"api_key"`
 		Channel string `json:"channel"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -88,13 +89,7 @@ func (h *AdminHandler) handleIssueToken(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusBadRequest, "subject is required")
 		return
 	}
-	if req.APIKey == "" {
-		writeJSONError(w, http.StatusBadRequest, "api_key is required")
-		return
-	}
 
-	// If a channel is specified, validate it exists in the registry.
-	// Empty channel means the token can access all channels (super token).
 	if req.Channel != "" {
 		if _, ok := h.registry.Get(req.Channel); !ok {
 			writeJSONError(w, http.StatusBadRequest, "channel not found: "+req.Channel)
@@ -106,8 +101,22 @@ func (h *AdminHandler) handleIssueToken(w http.ResponseWriter, r *http.Request) 
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject: req.Subject,
 		},
-		APIKey:  req.APIKey,
 		Channel: req.Channel,
+	}
+	token, err := h.issuer.Issue(claims)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"token": token})
+}
+
+func (h *AdminHandler) handleQuickToken(w http.ResponseWriter, r *http.Request) {
+	claims := &core.JWTClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject: "admin",
+		},
 	}
 	token, err := h.issuer.Issue(claims)
 	if err != nil {
@@ -123,11 +132,12 @@ func (h *AdminHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 	for _, ch := range h.registry.List() {
 		fail, success := h.health.TotalStats(ch.Name())
 		stats[ch.Name()] = map[string]any{
-			"health_score":    h.health.HealthScore(ch.Name()),
-			"is_healthy":      h.health.IsHealthy(ch.Name()),
-			"total_fail":      fail,
-			"total_success":   success,
-			"avg_latency_ms":  h.health.AverageLatency(ch.Name()).Milliseconds(),
+			"weight":         ch.Weight(),
+			"health_score":   h.health.HealthScore(ch.Name()),
+			"is_healthy":     h.health.IsHealthy(ch.Name()),
+			"total_fail":     fail,
+			"total_success":  success,
+			"avg_latency_ms": h.health.AverageLatency(ch.Name()).Milliseconds(),
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -155,10 +165,13 @@ func (h *AdminHandler) handleChannelAccounts(w http.ResponseWriter, r *http.Requ
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if lister, ok := ch.(accountLister); ok {
-		json.NewEncoder(w).Encode(lister.ListAccounts())
+		json.NewEncoder(w).Encode(map[string]any{
+			"channel":  channelName,
+			"accounts": lister.ListAccounts(),
+		})
 		return
 	}
-	json.NewEncoder(w).Encode([]any{})
+	json.NewEncoder(w).Encode(map[string]any{"channel": channelName, "accounts": []any{}})
 }
 
 func (h *AdminHandler) handleChannelOp(w http.ResponseWriter, r *http.Request) {
@@ -185,6 +198,7 @@ func (h *AdminHandler) handleChannelOp(w http.ResponseWriter, r *http.Request) {
 		ResetAccount(apiKey string) bool
 		RetireAccount(apiKey string) bool
 		ProbeAccount(apiKey string) bool
+		SetWeight(apiKey string, weight int) bool
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -204,6 +218,18 @@ func (h *AdminHandler) handleChannelOp(w http.ResponseWriter, r *http.Request) {
 		if hasOps {
 			ok2 = ops.ProbeAccount(apiKey)
 		}
+	case "weight":
+		// PATCH /admin/channel/{channel}/accounts/{apiKey}/weight
+		var req struct {
+			Weight int `json:"weight"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if hasOps {
+			ok2 = ops.SetWeight(apiKey, req.Weight)
+		}
 	default:
 		writeJSONError(w, http.StatusBadRequest, "unknown op: "+op)
 		return
@@ -218,6 +244,40 @@ func (h *AdminHandler) handleChannelOp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "channel": channelName, "op": op})
+}
+
+func (h *AdminHandler) handleChannelWeight(w http.ResponseWriter, r *http.Request) {
+	// POST /admin/channel-weight  body: {"channel":"kieai","weight":70}
+	var req struct {
+		Channel string `json:"channel"`
+		Weight  int    `json:"weight"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Weight <= 0 {
+		writeJSONError(w, http.StatusBadRequest, "weight must be > 0")
+		return
+	}
+
+	ch, ok := h.registry.Get(req.Channel)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+
+	type weightSetter interface {
+		SetChannelWeight(weight int)
+	}
+	setter, ok := ch.(weightSetter)
+	if !ok {
+		writeJSONError(w, http.StatusNotImplemented, "channel does not support weight update")
+		return
+	}
+	setter.SetChannelWeight(req.Weight)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "channel": req.Channel, "weight": req.Weight})
 }
 
 func writeJSONError(w http.ResponseWriter, code int, message string) {

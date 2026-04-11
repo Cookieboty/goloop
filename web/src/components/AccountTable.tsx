@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import type { AccountInfo } from "@/lib/types";
 import { Badge } from "./Badge";
 import { api } from "@/lib/api";
@@ -9,11 +9,6 @@ interface AccountTableProps {
   channel: string;
   accounts: AccountInfo[];
   onRefresh: () => void;
-}
-
-function maskKey(key: string) {
-  if (key.length <= 8) return key;
-  return key.slice(0, 4) + "****" + key.slice(-4);
 }
 
 function Btn({
@@ -51,6 +46,8 @@ export function AccountTable({
 }: AccountTableProps) {
   const [loading, setLoading] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const draftRef = useRef<HTMLInputElement>(null);
 
   async function act(
     label: string,
@@ -102,7 +99,7 @@ export function AccountTable({
           <thead>
             <tr>
               {[
-                "API Key",
+                "#",
                 "权重",
                 "状态",
                 "累计请求",
@@ -128,7 +125,7 @@ export function AccountTable({
             </tr>
           </thead>
           <tbody>
-            {accounts.map((acc) => (
+            {accounts.map((acc, idx) => (
               <tr
                 key={acc.api_key}
                 style={{ borderBottom: "1px solid var(--border)" }}
@@ -141,9 +138,63 @@ export function AccountTable({
                     color: "var(--text2)",
                   }}
                 >
-                  {maskKey(acc.api_key)}
+                  {idx + 1}
                 </td>
-                <td style={{ padding: "10px 12px" }}>{acc.weight}</td>
+                <td style={{ padding: "10px 12px" }}>
+                  {editingIdx === idx ? (
+                    <input
+                      ref={draftRef}
+                      type="number"
+                      min={1}
+                      defaultValue={acc.weight}
+                      style={{
+                        width: 60,
+                        padding: "2px 6px",
+                        border: "1px solid var(--blue)",
+                        borderRadius: 4,
+                        background: "var(--card)",
+                        color: "var(--text)",
+                        fontSize: 12,
+                      }}
+                      onBlur={async (e) => {
+                        const newWeight = parseInt(e.target.value, 10);
+                        if (
+                          newWeight > 0 &&
+                          newWeight !== acc.weight
+                        ) {
+                          await act(
+                            `修改权重`,
+                            () =>
+                              api.updateAccountWeight(
+                                channel,
+                                acc.api_key,
+                                newWeight
+                              )
+                          );
+                        }
+                        setEditingIdx(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.currentTarget.blur();
+                        } else if (e.key === "Escape") {
+                          setEditingIdx(null);
+                        }
+                      }}
+                    />
+                  ) : (
+                    <span
+                      style={{ cursor: "pointer", color: "var(--blue)" }}
+                      onClick={() => {
+                        setEditingIdx(idx);
+                        setTimeout(() => draftRef.current?.select(), 0);
+                      }}
+                      title="点击修改权重"
+                    >
+                      {acc.weight}
+                    </span>
+                  )}
+                </td>
                 <td style={{ padding: "10px 12px" }}>
                   <Badge status={acc.status} />
                 </td>
@@ -168,24 +219,24 @@ export function AccountTable({
                   <Btn
                     onClick={() =>
                       act(
-                        `探测 ${maskKey(acc.api_key)}`,
+                        `探测账号 #${idx + 1}`,
                         () => api.probeAccount(channel, acc.api_key)
                       )
                     }
                   >
-                    {loading === `探测 ${maskKey(acc.api_key)}`
+                    {loading === `探测账号 #${idx + 1}`
                       ? "…"
                       : "探测"}
                   </Btn>
                   <Btn
                     onClick={() =>
                       act(
-                        `重置 ${maskKey(acc.api_key)}`,
+                        `重置账号 #${idx + 1}`,
                         () => api.resetAccount(channel, acc.api_key)
                       )
                     }
                   >
-                    {loading === `重置 ${maskKey(acc.api_key)}`
+                    {loading === `重置账号 #${idx + 1}`
                       ? "…"
                       : "重置"}
                   </Btn>
@@ -194,11 +245,11 @@ export function AccountTable({
                     onClick={() => {
                       if (
                         confirm(
-                          `确认下线账号 ${maskKey(acc.api_key)}？此操作不可逆。`
+                          `确认下线账号 #${idx + 1}？此操作不可逆。`
                         )
                       ) {
                         act(
-                          `下线 ${maskKey(acc.api_key)}`,
+                          `下线账号 #${idx + 1}`,
                           () => api.retireAccount(channel, acc.api_key)
                         );
                       }

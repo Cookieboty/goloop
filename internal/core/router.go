@@ -64,11 +64,10 @@ func (r *Router) route() (Channel, error) {
 		if !ch.IsAvailable() {
 			continue
 		}
-		score := r.health.HealthScore(ch.Name())
-		if score <= 0 {
+		if r.health.HealthScore(ch.Name()) <= 0 {
 			continue
 		}
-		weight := int(score * 100)
+		weight := ch.Weight()
 		if weight <= 0 {
 			weight = 1
 		}
