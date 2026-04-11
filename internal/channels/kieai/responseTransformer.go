@@ -14,8 +14,8 @@ type ResponseTransformer struct {
 	store *storage.Store
 }
 
-func NewResponseTransformer() *ResponseTransformer {
-	return &ResponseTransformer{}
+func NewResponseTransformer(store *storage.Store) *ResponseTransformer {
+	return &ResponseTransformer{store: store}
 }
 
 func (t *ResponseTransformer) ToGoogleResponse(ctx context.Context, resultURLs []string) (*model.GoogleResponse, error) {
@@ -36,12 +36,8 @@ func (t *ResponseTransformer) ToGoogleResponse(ctx context.Context, resultURLs [
 		wg.Add(1)
 		go func(idx int, u string) {
 			defer wg.Done()
-			if t.store != nil {
-				data, err := t.store.DownloadToBytes(ctx, u)
-				ch <- imgResult{idx: idx, data: data, err: err}
-			} else {
-				ch <- imgResult{idx: idx}
-			}
+			data, err := t.store.DownloadToBytes(ctx, u)
+			ch <- imgResult{idx: idx, data: data, err: err}
 		}(i, url)
 	}
 

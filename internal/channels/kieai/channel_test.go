@@ -21,7 +21,7 @@ func TestKIEAIChannel_SubmitTask(t *testing.T) {
 
 	pool := NewAccountPool()
 	pool.AddAccount("test-key", 100)
-	ch := NewChannel(srv.URL, 100, pool, Config{BaseURL: srv.URL})
+	ch := NewChannel(srv.URL, 100, pool, Config{BaseURL: srv.URL}, nil)
 
 	if ch.Name() != "kieai" {
 		t.Errorf("Name mismatch")
@@ -55,7 +55,7 @@ func TestKIEAIChannel_Probe(t *testing.T) {
 
 	pool := NewAccountPool()
 	pool.AddAccount("test-key", 100)
-	ch := NewChannel(srv.URL, 100, pool, Config{BaseURL: srv.URL})
+	ch := NewChannel(srv.URL, 100, pool, Config{BaseURL: srv.URL}, nil)
 
 	acc := pool.List()[0]
 	if !ch.Probe(acc) {

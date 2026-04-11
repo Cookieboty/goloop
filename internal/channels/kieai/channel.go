@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"goloop/internal/model"
+	"goloop/internal/storage"
 )
 
 // Config holds KIE.AI channel configuration.
@@ -48,7 +49,7 @@ type Channel struct {
 }
 
 // NewChannel creates a new KIE.AI channel plugin.
-func NewChannel(baseURL string, weight int, pool *AccountPool, cfg Config) *Channel {
+func NewChannel(baseURL string, weight int, pool *AccountPool, cfg Config, store *storage.Store) *Channel {
 	if cfg.InitialInterval == 0 {
 		cfg = defaultConfig(baseURL)
 	}
@@ -67,7 +68,7 @@ func NewChannel(baseURL string, weight int, pool *AccountPool, cfg Config) *Chan
 		"gemini-2.5-flash-image":         {KieAIModel: "google/nano-banana", AspectRatio: "1:1", Resolution: "1K", OutputFormat: "png"},
 	}
 	ch.reqTransform = NewRequestTransformer(modelMapping)
-	ch.respTransform = NewResponseTransformer()
+	ch.respTransform = NewResponseTransformer(store)
 	return ch
 }
 

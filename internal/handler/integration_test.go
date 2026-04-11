@@ -59,7 +59,7 @@ func setupIntegrationTest(t *testing.T, kieaiHandler http.Handler, cdnResultURL 
 		MaxInterval:     30 * time.Millisecond,
 		MaxWaitTime:    5 * time.Second,
 		RetryAttempts:   3,
-	})
+	}, store)
 	registry.Register(ch)
 
 	modelMapping := map[string]config.ModelDefaults{

@@ -73,7 +73,7 @@ func main() {
 				MaxInterval:     chCfg.MaxInterval,
 				MaxWaitTime:     chCfg.MaxWaitTime,
 				RetryAttempts:   chCfg.RetryAttempts,
-			})
+			}, store)
 			registry.Register(kieCh)
 			slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
 
