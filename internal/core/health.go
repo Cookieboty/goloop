@@ -61,7 +61,11 @@ func (h *HealthTracker) RecordLatency(channel string, d time.Duration) {
 func (h *HealthTracker) HealthScore(channel string) float64 {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return h.health[channel]
+	score, exists := h.health[channel]
+	if !exists {
+		return maxHealth
+	}
+	return score
 }
 
 func (h *HealthTracker) AverageLatency(channel string) time.Duration {
