@@ -11,3 +11,10 @@ type Account interface {
     RecordFailure()
     RecordSuccess()
 }
+
+// AccountPool selects accounts using weighted random with health awareness.
+type AccountPool interface {
+    Select() (Account, error)    // weighted random, excludes unhealthy
+    Return(account Account, success bool)
+    List() []Account            // all accounts including unhealthy
+}
