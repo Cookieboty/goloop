@@ -22,3 +22,6 @@ web/.next/
 web/out/
 # embed 产物（由 make web-build 自动生成）
 internal/admin/out/
+
+# ---- 文档与计划 ----
+docs/
