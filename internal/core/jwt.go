@@ -4,6 +4,7 @@ import (
     "context"
     "errors"
     "fmt"
+    "log/slog"
     "net/http"
     "strings"
     "time"
@@ -75,11 +76,19 @@ func NewJWTMiddleware(issuer *JWTIssuer, next func(ctx context.Context, claims *
 func (m *JWTMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     token := extractBearerToken(r)
     if token == "" {
+        slog.Warn("jwt missing", "path", r.URL.Path, "auth", r.Header.Get("Authorization"))
         writeError(w, http.StatusUnauthorized, "JWT token required", "UNAUTHENTICATED")
         return
     }
     claims, err := m.issuer.Validate(token)
     if err != nil {
+        mask := func(v string) string {
+            if len(v) > 16 {
+                return v[:8] + "..." + v[len(v)-4:]
+            }
+            return "***"
+        }
+        slog.Warn("jwt invalid", "path", r.URL.Path, "auth", mask(r.Header.Get("Authorization")), "err", err)
         writeError(w, http.StatusUnauthorized, err.Error(), "UNAUTHENTICATED")
         return
     }

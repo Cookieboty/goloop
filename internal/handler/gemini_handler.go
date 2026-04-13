@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -275,6 +276,21 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 		}, http.StatusBadRequest)
 		return
 	}
+
+	maskHeader := func(v string) string {
+		if len(v) > 16 {
+			return v[:8] + "..." + v[len(v)-4:]
+		}
+		return "***"
+	}
+	log.Info("request received",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"model", googleModel,
+		"auth", maskHeader(r.Header.Get("Authorization")),
+		"contentType", r.Header.Get("Content-Type"),
+		"contents", fmt.Sprintf("%v", googleReq.Contents),
+	)
 
 	if isStreamingRequest(r) {
 		h.handleGenerateContentStreaming(w, r, googleModel, &googleReq, requestID)
