@@ -77,27 +77,35 @@ func (ch *Channel) Generate(_ context.Context, _ *model.GoogleRequest, _ string)
 }
 
 func (ch *Channel) SubmitTask(ctx context.Context, req *model.GoogleRequest, modelName string) (string, string, error) {
+	log := slog.With("channel", "kieai", "model", modelName)
+
 	acc, err := ch.Pool.Select()
 	if err != nil {
+		log.Warn("submitTask: no account available", "err", err)
 		return "", "", fmt.Errorf("kieai: no account available: %w", err)
 	}
 	acc.IncUsage()
 
 	kieReq, err := ch.reqTransform.Transform(ctx, req, modelName)
 	if err != nil {
+		log.Warn("submitTask: transform failed", "err", err)
 		ch.Pool.Return(acc, false)
 		return "", "", fmt.Errorf("kieai: transform: %w", err)
 	}
 
 	body, err := json.Marshal(kieReq)
 	if err != nil {
+		log.Warn("submitTask: marshal failed", "err", err)
 		ch.Pool.Return(acc, false)
 		return "", "", fmt.Errorf("kieai: marshal: %w", err)
 	}
 
+	log.Debug("submitTask: creating job")
+
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		ch.BaseURL+"/api/v1/jobs/createTask", bytes.NewReader(body))
 	if err != nil {
+		log.Warn("submitTask: build request failed", "err", err)
 		ch.Pool.Return(acc, false)
 		return "", "", err
 	}
@@ -106,6 +114,7 @@ func (ch *Channel) SubmitTask(ctx context.Context, req *model.GoogleRequest, mod
 
 	resp, err := ch.HTTPClient.Do(httpReq)
 	if err != nil {
+		log.Warn("submitTask: HTTP request failed", "err", err)
 		ch.Pool.Return(acc, false)
 		return "", "", err
 	}
@@ -113,10 +122,12 @@ func (ch *Channel) SubmitTask(ctx context.Context, req *model.GoogleRequest, mod
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
+		log.Warn("submitTask: read response failed", "err", err)
 		ch.Pool.Return(acc, false)
 		return "", "", err
 	}
 	if resp.StatusCode != http.StatusOK {
+		log.Warn("submitTask: HTTP error", "status", resp.StatusCode, "body", string(data))
 		ch.Pool.Return(acc, false)
 		return "", "", fmt.Errorf("kieai: HTTP %d: %s", resp.StatusCode, string(data))
 	}
@@ -128,16 +139,19 @@ func (ch *Channel) SubmitTask(ctx context.Context, req *model.GoogleRequest, mod
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
+		log.Warn("submitTask: unmarshal failed", "err", err)
 		ch.Pool.Return(acc, false)
 		return "", "", err
 	}
 	if result.Data.TaskID == "" {
+		log.Warn("submitTask: empty taskId received")
 		ch.Pool.Return(acc, false)
 		return "", "", fmt.Errorf("kieai: empty taskId")
 	}
 
 	// Store account reference so PollTask can call Return when the task completes.
 	ch.activeAccounts.Store(result.Data.TaskID, acc)
+	log.Info("submitTask: task created successfully", "taskId", result.Data.TaskID)
 	return result.Data.TaskID, acc.APIKey(), nil
 }
 
