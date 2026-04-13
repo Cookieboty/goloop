@@ -28,10 +28,18 @@ func TestChannelInterface_SatisfiedByMock(t *testing.T) {
     if err != nil { t.Fatalf("PollTask returned error: %v", err) }
 }
 
-type mockChannel struct{ name string }
+type mockChannel struct {
+	name   string
+	weight int
+}
 
-func (m *mockChannel) Name() string         { return m.name }
-func (m *mockChannel) Weight() int          { return 100 }
+func (m *mockChannel) Name() string { return m.name }
+func (m *mockChannel) Weight() int {
+	if m.weight == 0 {
+		return 100
+	}
+	return m.weight
+}
 func (m *mockChannel) HealthScore() float64 { return 1.0 }
 func (m *mockChannel) IsAvailable() bool    { return true }
 

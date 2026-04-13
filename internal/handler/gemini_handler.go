@@ -96,11 +96,14 @@ func isStreamingRequest(r *http.Request) bool {
 }
 
 // handleGenerateContentStreaming handles SSE streaming responses.
+// It tries each channel in priority order, falling back on failure.
+// Note: once SSE headers are written (after the first successful SubmitTask),
+// we cannot fall back further — errors are reported via SSE error events.
 func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r *http.Request, googleModel string, googleReq *model.GoogleRequest, requestID string) {
 	ctx := r.Context()
 	log := slog.With("requestId", requestID, "googleModel", googleModel)
 
-	ch, err := h.router.RouteForModel(ctx, googleModel)
+	channels, err := h.router.RouteWithFallback(ctx)
 	if err != nil {
 		log.Error("router error", "err", err)
 		h.writeSSEError(w, model.GoogleError{
@@ -108,17 +111,35 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 		}, http.StatusServiceUnavailable)
 		return
 	}
-	log = log.With("channel", ch.Name())
 
-	taskID, apiKey, err := ch.SubmitTask(ctx, googleReq, googleModel)
-	if err != nil {
-		log.Error("submitTask failed", "err", err)
+	// Try each channel in priority order. For streaming we must commit to a
+	// channel before writing headers, so we attempt SubmitTask first and only
+	// fall back if it fails before headers are sent.
+	var (
+		ch      core.Channel
+		taskID  string
+		apiKey  string
+		submitErr error
+	)
+	for _, candidate := range channels {
+		taskID, apiKey, submitErr = candidate.SubmitTask(ctx, googleReq, googleModel)
+		if submitErr == nil {
+			ch = candidate
+			break
+		}
+		log.Warn("channel submitTask failed, trying next", "channel", candidate.Name(), "err", submitErr)
+		h.router.RecordResult(candidate.Name(), false, 0)
+	}
+
+	if ch == nil {
+		log.Error("all channels failed at submitTask", "err", submitErr)
 		h.writeSSEError(w, model.GoogleError{
-			Error: model.GoogleErrorDetail{Code: 500, Message: err.Error(), Status: "INTERNAL"},
-		}, http.StatusInternalServerError)
+			Error: model.GoogleErrorDetail{Code: 503, Message: "all channels failed: " + submitErr.Error(), Status: "UNAVAILABLE"},
+		}, http.StatusServiceUnavailable)
 		return
 	}
-	log = log.With("taskId", taskID)
+
+	log = log.With("channel", ch.Name(), "taskId", taskID)
 	log.Info("task created, polling for result")
 
 	resultCh := h.taskManager.SubmitTaskStreaming(ctx, apiKey, taskID)
@@ -260,8 +281,8 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Route with context — honours JWT channel restriction if present.
-	ch, err := h.router.RouteForModel(ctx, googleModel)
+	// Get ordered fallback list — honours JWT channel restriction if present.
+	channels, err := h.router.RouteWithFallback(ctx)
 	if err != nil {
 		log.Error("router error", "err", err)
 		writeGoogleError(w, model.GoogleError{
@@ -269,41 +290,62 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 		}, http.StatusServiceUnavailable)
 		return
 	}
-	log = log.With("channel", ch.Name())
 
-	taskID, apiKey, err := ch.SubmitTask(ctx, &googleReq, googleModel)
-	if err != nil {
-		log.Error("submitTask failed", "err", err)
-		writeGoogleError(w, model.GoogleError{
-			Error: model.GoogleErrorDetail{Code: 500, Message: err.Error(), Status: "INTERNAL"},
-		}, http.StatusInternalServerError)
-		return
-	}
-	log = log.With("taskId", taskID)
-	log.Info("task created, polling for result")
+	// Try each channel in priority order, falling back on failure.
+	var lastErr error
+	for _, ch := range channels {
+		chLog := log.With("channel", ch.Name())
+		start := time.Now()
 
-	start := time.Now()
+		googleResp, err := h.tryChannel(ctx, ch, &googleReq, googleModel)
+		latency := time.Since(start).Milliseconds()
 
-	googleResp, err := ch.PollTask(ctx, apiKey, taskID)
-	if err != nil {
-		log.Error("poll failed", "err", err)
-		var tErr *kieai.TaskFailedError
-		if errors.As(err, &tErr) {
-			gErr, httpCode := transformer.ToGoogleError(500, tErr.Reason)
-			writeGoogleError(w, gErr, httpCode)
-		} else {
-			gErr, httpCode := transformer.ToGoogleError(500, err.Error())
-			writeGoogleError(w, gErr, httpCode)
+		if err == nil {
+			h.router.RecordResult(ch.Name(), true, latency)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(googleResp)
+			return
 		}
-		h.router.RecordResult(ch.Name(), false, time.Since(start).Milliseconds())
-		return
+
+		h.router.RecordResult(ch.Name(), false, latency)
+		chLog.Warn("channel failed, trying next", "err", err)
+		lastErr = err
 	}
 
-	h.router.RecordResult(ch.Name(), true, time.Since(start).Milliseconds())
+	// All channels failed.
+	log.Error("all channels failed", "err", lastErr)
+	var tErr *kieai.TaskFailedError
+	if errors.As(lastErr, &tErr) {
+		gErr, httpCode := transformer.ToGoogleError(500, tErr.Reason)
+		writeGoogleError(w, gErr, httpCode)
+	} else {
+		writeGoogleError(w, model.GoogleError{
+			Error: model.GoogleErrorDetail{Code: 503, Message: "all channels failed: " + lastErr.Error(), Status: "UNAVAILABLE"},
+		}, http.StatusServiceUnavailable)
+	}
+}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(googleResp)
+// tryChannel attempts to complete a request on a single channel.
+// It first tries Generate (synchronous path); if the channel returns
+// ErrNotSupported it falls back to SubmitTask + PollTask (async path).
+func (h *GeminiHandler) tryChannel(ctx context.Context, ch core.Channel, req *model.GoogleRequest, googleModel string) (*model.GoogleResponse, error) {
+	// 1. Try synchronous Generate path.
+	resp, err := ch.Generate(ctx, req, googleModel)
+	if err == nil {
+		return resp, nil
+	}
+	if !errors.Is(err, core.ErrNotSupported) {
+		return nil, err
+	}
+
+	// 2. Fall back to async SubmitTask + PollTask.
+	taskID, apiKey, err := ch.SubmitTask(ctx, req, googleModel)
+	if err != nil {
+		return nil, err
+	}
+	slog.Debug("task submitted", "channel", ch.Name(), "taskId", taskID)
+	return ch.PollTask(ctx, apiKey, taskID)
 }
 
 func writeGoogleError(w http.ResponseWriter, e model.GoogleError, httpCode int) {

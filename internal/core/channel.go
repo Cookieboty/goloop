@@ -1,10 +1,16 @@
 package core
 
 import (
-    "context"
+	"context"
+	"errors"
 
-    "goloop/internal/model"
+	"goloop/internal/model"
 )
+
+// ErrNotSupported is returned by Generate, SubmitTask, or PollTask when the
+// channel does not support that operation mode. Callers should check with
+// errors.Is and fall back to the alternative path.
+var ErrNotSupported = errors.New("channel: operation not supported")
 
 // Channel is the interface each AI provider plugin must implement.
 type Channel interface {

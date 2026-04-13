@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"sort"
 	"time"
 )
 
@@ -33,10 +34,11 @@ func NewRouter(reg *PluginRegistry, health *HealthTracker) *Router {
 	return &Router{reg: reg, health: health}
 }
 
-// RouteForModel selects a healthy channel for the given model.
-// If the context carries a channel restriction (set by JWT middleware), only
-// that channel will be considered.
-func (r *Router) RouteForModel(ctx context.Context, modelName string) (Channel, error) {
+// RouteWithFallback returns all healthy channels sorted by weight descending.
+// Callers should try each channel in order, falling back to the next on failure.
+// Channels with HealthScore <= 0 or IsAvailable() == false are excluded.
+// If the context carries a JWT channel restriction, only that channel is returned.
+func (r *Router) RouteWithFallback(ctx context.Context) ([]Channel, error) {
 	// Honor JWT channel restriction if present.
 	if restricted, ok := ChannelRestrictionFromContext(ctx); ok {
 		ch, found := r.reg.Get(restricted)
@@ -46,13 +48,45 @@ func (r *Router) RouteForModel(ctx context.Context, modelName string) (Channel, 
 		if !ch.IsAvailable() {
 			return nil, fmt.Errorf("router: restricted channel %q is not available", restricted)
 		}
-		return ch, nil
+		return []Channel{ch}, nil
 	}
 
-	return r.route()
+	all := r.reg.List()
+	var candidates []Channel
+	for _, ch := range all {
+		if !ch.IsAvailable() {
+			continue
+		}
+		if r.health.HealthScore(ch.Name()) <= 0 {
+			continue
+		}
+		candidates = append(candidates, ch)
+	}
+
+	if len(candidates) == 0 {
+		return nil, errors.New("router: no healthy channels available")
+	}
+
+	// Sort by weight descending: higher weight = higher priority.
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Weight() > candidates[j].Weight()
+	})
+
+	return candidates, nil
+}
+
+// RouteForModel returns the highest-priority healthy channel.
+// Kept for backward compatibility; prefer RouteWithFallback for new code.
+func (r *Router) RouteForModel(ctx context.Context, modelName string) (Channel, error) {
+	channels, err := r.RouteWithFallback(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return channels[0], nil
 }
 
 // route selects a healthy channel using weighted random selection across all channels.
+// Retained for internal use by legacy callers.
 func (r *Router) route() (Channel, error) {
 	channels := r.reg.List()
 

@@ -8,9 +8,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"sync/atomic"
+	"sync"
 	"time"
 
+	"goloop/internal/core"
 	"goloop/internal/model"
 	"goloop/internal/storage"
 )
@@ -37,15 +38,15 @@ func defaultConfig(baseURL string) Config {
 }
 
 // Channel implements core.Channel for KIE.AI.
+// It embeds core.BaseChannel to inherit all boilerplate methods; only the
+// KIE.AI-specific async task flow (SubmitTask + PollTask) and Probe are
+// overridden here.
 type Channel struct {
-	name          string
-	baseURL       string
-	weight        atomic.Int64
-	httpClient    *http.Client
-	pool          *AccountPool
-	reqTransform  *RequestTransformer
-	respTransform *ResponseTransformer
-	cfg           Config
+	core.BaseChannel                   // provides Name/Weight/IsAvailable/HealthScore/Admin methods
+	reqTransform   *RequestTransformer
+	respTransform  *ResponseTransformer
+	cfg            Config
+	activeAccounts sync.Map // taskID -> core.Account; used to call pool.Return on completion
 }
 
 // NewChannel creates a new KIE.AI channel plugin.
@@ -53,47 +54,30 @@ func NewChannel(baseURL string, weight int, pool *AccountPool, cfg Config, store
 	if cfg.InitialInterval == 0 {
 		cfg = defaultConfig(baseURL)
 	}
-	ch := &Channel{
-		name:       "kieai",
-		baseURL:    baseURL,
-		httpClient: &http.Client{Timeout: cfg.Timeout},
-		pool:       pool,
-		cfg:        cfg,
-	}
-	ch.weight.Store(int64(weight))
 
 	modelMapping := map[string]ModelDefaults{
 		"gemini-3.1-flash-image-preview": {KieAIModel: "nano-banana-2", AspectRatio: "1:1", Resolution: "1K", OutputFormat: "png"},
 		"gemini-3-pro-image-preview":     {KieAIModel: "nano-banana-pro", AspectRatio: "1:1", Resolution: "2K", OutputFormat: "png"},
 		"gemini-2.5-flash-image":         {KieAIModel: "google/nano-banana", AspectRatio: "1:1", Resolution: "1K", OutputFormat: "png"},
 	}
-	ch.reqTransform = NewRequestTransformer(modelMapping)
-	ch.respTransform = NewResponseTransformer(store)
+
+	ch := &Channel{
+		BaseChannel:   core.NewBaseChannel("kieai", baseURL, weight, pool, cfg.Timeout),
+		cfg:           cfg,
+		reqTransform:  NewRequestTransformer(modelMapping),
+		respTransform: NewResponseTransformer(store),
+	}
 	return ch
 }
 
-func (ch *Channel) Name() string { return ch.name }
-func (ch *Channel) Weight() int  { return int(ch.weight.Load()) }
-func (ch *Channel) SetChannelWeight(weight int) { ch.weight.Store(int64(weight)) }
-func (ch *Channel) IsAvailable() bool                                          { return ch.pool != nil && len(ch.pool.List()) > 0 }
-func (ch *Channel) HealthScore() float64 {
-	accounts := ch.pool.List()
-	if len(accounts) == 0 {
-		return 0
-	}
-	var total float64
-	for _, acc := range accounts {
-		total += acc.HealthScore()
-	}
-	return total / float64(len(accounts))
-}
-
-func (ch *Channel) Generate(ctx context.Context, req *model.GoogleRequest, modelName string) (*model.GoogleResponse, error) {
-	return nil, fmt.Errorf("kieai: Generate not supported, use SubmitTask + PollTask")
+// Generate is not supported by KIE.AI (async-only); returns ErrNotSupported.
+// BaseChannel already provides this default, but we keep it explicit for clarity.
+func (ch *Channel) Generate(_ context.Context, _ *model.GoogleRequest, _ string) (*model.GoogleResponse, error) {
+	return nil, core.ErrNotSupported
 }
 
 func (ch *Channel) SubmitTask(ctx context.Context, req *model.GoogleRequest, modelName string) (string, string, error) {
-	acc, err := ch.pool.Select()
+	acc, err := ch.Pool.Select()
 	if err != nil {
 		return "", "", fmt.Errorf("kieai: no account available: %w", err)
 	}
@@ -101,52 +85,71 @@ func (ch *Channel) SubmitTask(ctx context.Context, req *model.GoogleRequest, mod
 
 	kieReq, err := ch.reqTransform.Transform(ctx, req, modelName)
 	if err != nil {
+		ch.Pool.Return(acc, false)
 		return "", "", fmt.Errorf("kieai: transform: %w", err)
 	}
 
 	body, err := json.Marshal(kieReq)
 	if err != nil {
+		ch.Pool.Return(acc, false)
 		return "", "", fmt.Errorf("kieai: marshal: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		ch.baseURL+"/api/v1/jobs/createTask", bytes.NewReader(body))
+		ch.BaseURL+"/api/v1/jobs/createTask", bytes.NewReader(body))
 	if err != nil {
+		ch.Pool.Return(acc, false)
 		return "", "", err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+acc.APIKey())
 
-	resp, err := ch.httpClient.Do(httpReq)
+	resp, err := ch.HTTPClient.Do(httpReq)
 	if err != nil {
+		ch.Pool.Return(acc, false)
 		return "", "", err
 	}
 	defer resp.Body.Close()
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
+		ch.Pool.Return(acc, false)
 		return "", "", err
 	}
 	if resp.StatusCode != http.StatusOK {
+		ch.Pool.Return(acc, false)
 		return "", "", fmt.Errorf("kieai: HTTP %d: %s", resp.StatusCode, string(data))
 	}
 
 	var result struct {
-		Code int    `json:"code"`
+		Code int `json:"code"`
 		Data struct {
 			TaskID string `json:"taskId"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
+		ch.Pool.Return(acc, false)
 		return "", "", err
 	}
 	if result.Data.TaskID == "" {
+		ch.Pool.Return(acc, false)
 		return "", "", fmt.Errorf("kieai: empty taskId")
 	}
+
+	// Store account reference so PollTask can call Return when the task completes.
+	ch.activeAccounts.Store(result.Data.TaskID, acc)
 	return result.Data.TaskID, acc.APIKey(), nil
 }
 
 func (ch *Channel) PollTask(ctx context.Context, apiKey, taskID string) (*model.GoogleResponse, error) {
+	// Return the account to the pool when polling completes (success or failure).
+	var pollSuccess bool
+	defer func() {
+		if raw, ok := ch.activeAccounts.LoadAndDelete(taskID); ok {
+			ch.Pool.Return(raw.(core.Account), pollSuccess)
+		}
+	}()
+
 	deadline := time.Now().Add(ch.cfg.MaxWaitTime)
 	interval := ch.cfg.InitialInterval
 	consecutiveFails := 0
@@ -178,7 +181,11 @@ func (ch *Channel) PollTask(ctx context.Context, apiKey, taskID string) (*model.
 			if record.ResultJSON() == nil || len(record.ResultJSON().ResultURLs) == 0 {
 				return nil, fmt.Errorf("kieai: no result URLs")
 			}
-			return ch.respTransform.ToGoogleResponse(ctx, record.ResultJSON().ResultURLs)
+			resp, err := ch.respTransform.ToGoogleResponse(ctx, record.ResultJSON().ResultURLs)
+			if err == nil {
+				pollSuccess = true
+			}
+			return resp, err
 		case "fail":
 			return nil, fmt.Errorf("kieai: task %q failed: %s", taskID, record.FailReason)
 		case "waiting", "queuing", "generating":
@@ -189,13 +196,13 @@ func (ch *Channel) PollTask(ctx context.Context, apiKey, taskID string) (*model.
 
 func (ch *Channel) getTaskStatus(ctx context.Context, apiKey, taskID string) (*model.KieAIRecordData, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		ch.baseURL+"/api/v1/jobs/recordInfo?taskId="+taskID, nil)
+		ch.BaseURL+"/api/v1/jobs/recordInfo?taskId="+taskID, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := ch.httpClient.Do(req)
+	resp, err := ch.HTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -228,19 +235,19 @@ func (ch *Channel) getTaskStatus(ctx context.Context, apiKey, taskID string) (*m
 	}, nil
 }
 
-// Probe sends a lightweight health check for a specific account.
-func (ch *Channel) Probe(account Account) bool {
+// Probe overrides BaseChannel's default probe with a KIE.AI-specific endpoint.
+func (ch *Channel) Probe(account core.Account) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		ch.baseURL+"/api/v1/user/info", nil)
+		ch.BaseURL+"/api/v1/user/info", nil)
 	if err != nil {
 		return false
 	}
 	req.Header.Set("Authorization", "Bearer "+account.APIKey())
 
-	resp, err := ch.httpClient.Do(req)
+	resp, err := ch.HTTPClient.Do(req)
 	if err != nil {
 		return false
 	}
@@ -248,68 +255,9 @@ func (ch *Channel) Probe(account Account) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// SetWeight updates the weight of an account in the pool.
-func (ch *Channel) SetWeight(apiKey string, weight int) bool {
-	if ch.pool == nil {
-		return false
-	}
-	return ch.pool.SetWeight(apiKey, weight)
-}
-
-// ListAccounts returns all accounts in the pool as admin-facing maps.
-func (ch *Channel) ListAccounts() []map[string]any {
-	if ch.pool == nil {
-		return nil
-	}
-	accounts := ch.pool.listRaw()
-	result := make([]map[string]any, len(accounts))
-	for i, acc := range accounts {
-		status := "healthy"
-		if !acc.IsHealthy() {
-			status = "unhealthy"
-		} else if acc.HealthScore() < 0.6 {
-			status = "degraded"
-		}
-		result[i] = map[string]any{
-			"api_key":              acc.APIKey(),
-			"weight":               acc.Weight(),
-			"status":               status,
-			"usage_count":          acc.UsageCount(),
-			"health_score":         acc.HealthScore(),
-			"consecutive_failures": acc.ConsecutiveFailures(),
-		}
-	}
-	return result
-}
-
-// ResetAccount resets failure counters for an account.
-func (ch *Channel) ResetAccount(apiKey string) bool {
-	if ch.pool == nil {
-		return false
-	}
-	for _, acc := range ch.pool.List() {
-		if acc.APIKey() == apiKey {
-			acc.RecordSuccess()
-			return true
-		}
-	}
-	return false
-}
-
-// RetireAccount removes an account from the pool.
-func (ch *Channel) RetireAccount(apiKey string) bool {
-	if ch.pool == nil {
-		return false
-	}
-	return ch.pool.Remove(apiKey)
-}
-
-// ProbeAccount sends a health probe for a specific account.
-func (ch *Channel) ProbeAccount(apiKey string) bool {
-	for _, acc := range ch.pool.List() {
-		if acc.APIKey() == apiKey {
-			return ch.Probe(acc)
-		}
-	}
-	return false
-}
+// The following methods are inherited from core.BaseChannel and do NOT need
+// to be re-implemented here:
+//   - Name(), Weight(), SetChannelWeight()
+//   - IsAvailable(), HealthScore()
+//   - GetAccountPool()
+//   - ListAccounts(), ResetAccount(), RetireAccount(), ProbeAccount(), SetWeight()

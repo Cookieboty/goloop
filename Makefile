@@ -188,7 +188,7 @@ ps:
 # 开发环境
 dev: build
 	@echo "启动开发模式..."
-	./bin/$(BINARY_NAME)
+	@. ./.env && ./bin/$(BINARY_NAME)
 
 # 安装开发依赖
 install-tools:

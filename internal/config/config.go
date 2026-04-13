@@ -93,9 +93,9 @@ func getEnvInt(key string, fallback int) int {
 	return n
 }
 
-// channelEnvPrefix converts a channel name to its environment variable prefix.
+// ChannelEnvPrefix converts a channel name to its environment variable prefix.
 // e.g. "kieai" -> "CHANNEL_KIEAI_", "gemini-direct" -> "CHANNEL_GEMINI_DIRECT_"
-func channelEnvPrefix(name string) string {
+func ChannelEnvPrefix(name string) string {
 	upper := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
 	return "CHANNEL_" + upper + "_"
 }
@@ -127,7 +127,7 @@ func parseAccounts(raw string) []AccountConfig {
 
 // loadChannelFromEnv loads a single channel config using the CHANNEL_<NAME>_* prefix.
 func loadChannelFromEnv(name string) (ChannelConfig, bool) {
-	pfx := channelEnvPrefix(name)
+	pfx := ChannelEnvPrefix(name)
 	baseURL := os.Getenv(pfx + "BASE_URL")
 	if baseURL == "" {
 		return ChannelConfig{}, false
