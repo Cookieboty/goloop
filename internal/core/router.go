@@ -34,9 +34,13 @@ func NewRouter(reg *PluginRegistry, health *HealthTracker) *Router {
 	return &Router{reg: reg, health: health}
 }
 
-// RouteWithFallback returns all healthy channels sorted by weight descending.
-// Callers should try each channel in order, falling back to the next on failure.
-// Channels with HealthScore <= 0 or IsAvailable() == false are excluded.
+// hardStopThreshold is the health score below which a channel is excluded from routing.
+const hardStopThreshold = 0.2
+
+// RouteWithFallback returns all healthy channels sorted by effective weight descending.
+// Effective weight = configured weight * health score, so degraded channels receive
+// proportionally less traffic during recovery.
+// Channels with HealthScore < hardStopThreshold or IsAvailable() == false are excluded.
 // If the context carries a JWT channel restriction, only that channel is returned.
 func (r *Router) RouteWithFallback(ctx context.Context) ([]Channel, error) {
 	// Honor JWT channel restriction if present.
@@ -57,7 +61,7 @@ func (r *Router) RouteWithFallback(ctx context.Context) ([]Channel, error) {
 		if !ch.IsAvailable() {
 			continue
 		}
-		if r.health.HealthScore(ch.Name()) <= 0 {
+		if r.health.HealthScore(ch.Name()) < hardStopThreshold {
 			continue
 		}
 		candidates = append(candidates, ch)
@@ -67,9 +71,13 @@ func (r *Router) RouteWithFallback(ctx context.Context) ([]Channel, error) {
 		return nil, errors.New("router: no healthy channels available")
 	}
 
-	// Sort by weight descending: higher weight = higher priority.
+	// Sort by effective weight descending: weight * healthScore.
+	// Fully healthy channels (score=1.0) keep their full weight; recovering
+	// channels (score=0.5) get half weight, limiting their traffic share.
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Weight() > candidates[j].Weight()
+		wi := float64(candidates[i].Weight()) * r.health.HealthScore(candidates[i].Name())
+		wj := float64(candidates[j].Weight()) * r.health.HealthScore(candidates[j].Name())
+		return wi > wj
 	})
 
 	return candidates, nil
@@ -86,7 +94,8 @@ func (r *Router) RouteForModel(ctx context.Context, modelName string) (Channel, 
 }
 
 // route selects a healthy channel using weighted random selection across all channels.
-// Retained for internal use by legacy callers.
+// Uses effective weight (configured weight * health score) so degraded channels
+// receive proportionally less traffic. Retained for internal use by legacy callers.
 func (r *Router) route() (Channel, error) {
 	channels := r.reg.List()
 
@@ -98,16 +107,17 @@ func (r *Router) route() (Channel, error) {
 		if !ch.IsAvailable() {
 			continue
 		}
-		if r.health.HealthScore(ch.Name()) <= 0 {
+		score := r.health.HealthScore(ch.Name())
+		if score < hardStopThreshold {
 			continue
 		}
-		weight := ch.Weight()
-		if weight <= 0 {
-			weight = 1
+		effectiveWeight := int(float64(ch.Weight()) * score)
+		if effectiveWeight <= 0 {
+			effectiveWeight = 1
 		}
 		candidates = append(candidates, ch)
-		weights = append(weights, weight)
-		totalWeight += weight
+		weights = append(weights, effectiveWeight)
+		totalWeight += effectiveWeight
 	}
 
 	if len(candidates) == 0 {

@@ -125,7 +125,7 @@ func main() {
 	}
 
 	// Start health reaper for automatic account recovery.
-	reaper := core.NewHealthReaper(registry, health, cfg.Health.ProbeInterval, cfg.Health.RecoveryThreshold)
+	reaper := core.NewHealthReaper(registry, health, cfg.Health.ProbeInterval, cfg.Health.RecoveryInterval)
 	reaper.Start()
 	defer reaper.Stop()
 

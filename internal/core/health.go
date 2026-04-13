@@ -21,6 +21,7 @@ type HealthTracker struct {
 	totalSuccess  map[string]int
 	latencies     map[string][]time.Duration
 	health        map[string]float64
+	lastFailure   map[string]time.Time
 }
 
 func NewHealthTracker() *HealthTracker {
@@ -30,6 +31,7 @@ func NewHealthTracker() *HealthTracker {
 		totalSuccess: make(map[string]int),
 		latencies:    make(map[string][]time.Duration),
 		health:       make(map[string]float64),
+		lastFailure:  make(map[string]time.Time),
 	}
 }
 
@@ -38,6 +40,7 @@ func (h *HealthTracker) RecordFailure(channel string) {
 	defer h.mu.Unlock()
 	h.consecutive[channel]++
 	h.totalFail[channel]++
+	h.lastFailure[channel] = time.Now()
 	h.recalc(channel)
 }
 
@@ -110,5 +113,33 @@ func (h *HealthTracker) recalc(channel string) {
 	ratio := float64(fail) / float64(total)
 	consecutive := h.consecutive[channel]
 	h.health[channel] = math.Max(minHealth, math.Min(maxHealth,
-		1.0 - (ratio*0.5) - (float64(consecutive)*0.1)))
+		1.0-(ratio*0.5)-(float64(consecutive)*0.1)))
+}
+
+// LastFailureTime returns when the channel last recorded a failure.
+// Returns zero time if no failures have been recorded.
+func (h *HealthTracker) LastFailureTime(channel string) time.Time {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.lastFailure[channel]
+}
+
+// ResetHealthTo resets a channel's health score to the given value, clears
+// consecutive failures, and reseeds the total counters so that subsequent
+// recalc() calls start from a clean baseline reflecting the new score.
+// Called by HealthReaper for gradual recovery after a hard-stop period.
+func (h *HealthTracker) ResetHealthTo(channel string, score float64) {
+	score = math.Max(minHealth, math.Min(maxHealth, score))
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.health[channel] = score
+	h.consecutive[channel] = 0
+	// Reseed counters: choose fail=1,success=1 for score≈0.5 as a neutral
+	// starting point regardless of the exact target score, so the next real
+	// requests quickly drive the score in the right direction.
+	h.totalFail[channel] = 1
+	h.totalSuccess[channel] = 1
+	// Clear the last-failure timestamp so the recovery timer won't fire again
+	// immediately on the next tick.
+	delete(h.lastFailure, channel)
 }

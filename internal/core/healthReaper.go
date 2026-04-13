@@ -12,25 +12,27 @@ type ChannelWithPool interface {
 	GetAccountPool() AccountPool
 }
 
-// ChannelHealthReaper periodically probes unhealthy accounts to recover them.
+// ChannelHealthReaper periodically probes unhealthy accounts and recovers
+// hard-stopped channels after a quiet period.
 type ChannelHealthReaper struct {
-	reg            *PluginRegistry
-	health         *HealthTracker
-	probeInterval  time.Duration
-	recoveryThresh int
-	stopCh         chan struct{}
-	stopOnce       sync.Once
-	wg             sync.WaitGroup
+	reg              *PluginRegistry
+	health           *HealthTracker
+	probeInterval    time.Duration
+	recoveryInterval time.Duration // how long after last failure before resetting a hard-stopped channel
+	stopCh           chan struct{}
+	stopOnce         sync.Once
+	wg               sync.WaitGroup
 }
 
-// NewHealthReaper creates a reaper that probes unhealthy accounts on a schedule.
-func NewHealthReaper(reg *PluginRegistry, health *HealthTracker, interval time.Duration, recoveryThresh int) *ChannelHealthReaper {
+// NewHealthReaper creates a reaper that probes unhealthy accounts on a schedule
+// and recovers hard-stopped channels after recoveryInterval of inactivity.
+func NewHealthReaper(reg *PluginRegistry, health *HealthTracker, interval time.Duration, recoveryInterval time.Duration) *ChannelHealthReaper {
 	return &ChannelHealthReaper{
-		reg:            reg,
-		health:         health,
-		probeInterval:  interval,
-		recoveryThresh: recoveryThresh,
-		stopCh:         make(chan struct{}),
+		reg:              reg,
+		health:           health,
+		probeInterval:    interval,
+		recoveryInterval: recoveryInterval,
+		stopCh:           make(chan struct{}),
 	}
 }
 
@@ -53,6 +55,7 @@ func (r *ChannelHealthReaper) run() {
 			return
 		case <-ticker.C:
 			r.probeUnhealthyAccounts()
+			r.recoverStoppedChannels()
 		}
 	}
 }
@@ -93,6 +96,26 @@ func (r *ChannelHealthReaper) probeUnhealthyAccounts() {
 					"channel", ch.Name(), "apiKey", keyPreview)
 			}
 		}
+	}
+}
+
+// recoverStoppedChannels resets hard-stopped channels (health < hardStopThreshold)
+// to 50% health after recoveryInterval has elapsed since their last failure.
+// This allows them to re-enter the routing pool with reduced traffic share
+// so that real requests can validate their recovery without a separate probe cost.
+func (r *ChannelHealthReaper) recoverStoppedChannels() {
+	for _, ch := range r.reg.List() {
+		score := r.health.HealthScore(ch.Name())
+		if score >= hardStopThreshold {
+			continue
+		}
+		lastFail := r.health.LastFailureTime(ch.Name())
+		if lastFail.IsZero() || time.Since(lastFail) < r.recoveryInterval {
+			continue
+		}
+		r.health.ResetHealthTo(ch.Name(), 0.5)
+		slog.Info("healthReaper: channel recovered to 50%",
+			"channel", ch.Name(), "prevScore", score)
 	}
 }
 

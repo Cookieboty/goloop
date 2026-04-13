@@ -39,6 +39,7 @@ type HealthConfig struct {
 	ProbeInterval     time.Duration
 	ProbeTimeout      time.Duration
 	RecoveryThreshold int
+	RecoveryInterval  time.Duration // how long after last failure before resetting a hard-stopped channel
 }
 
 type ChannelConfig struct {
@@ -188,6 +189,7 @@ func Load() (*Config, error) {
 			ProbeInterval:     getEnvDuration("HEALTH_PROBE_INTERVAL", "30s"),
 			ProbeTimeout:      getEnvDuration("HEALTH_PROBE_TIMEOUT", "5s"),
 			RecoveryThreshold: getEnvInt("HEALTH_RECOVERY_THRESHOLD", 2),
+			RecoveryInterval:  getEnvDuration("HEALTH_RECOVERY_INTERVAL", "30m"),
 		},
 		ModelMapping: map[string]ModelDefaults{
 			"gemini-3.1-flash-image-preview": {
