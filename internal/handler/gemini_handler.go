@@ -128,6 +128,10 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 			ch = candidate
 			break
 		}
+		if ctx.Err() != nil {
+			log.Info("request cancelled by client during submitTask, not recording failure", "channel", candidate.Name(), "err", submitErr)
+			break
+		}
 		log.Warn("channel submitTask failed, trying next", "channel", candidate.Name(), "err", submitErr)
 		h.router.RecordResult(candidate.Name(), false, 0)
 	}
@@ -322,6 +326,12 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(googleResp)
 			return
+		}
+
+		if ctx.Err() != nil {
+			chLog.Info("request cancelled by client, not recording failure", "err", err)
+			lastErr = err
+			break
 		}
 
 		h.router.RecordResult(ch.Name(), false, latency)
