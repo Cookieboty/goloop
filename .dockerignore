@@ -22,6 +22,14 @@ dist/
 *.so
 *.dylib
 
+# 前端构建中间产物（Docker 会在容器内重新构建）
+web/node_modules
+web/.next
+web/out
+
+# 本地嵌入产物（Docker 会从 frontend stage 复制）
+internal/admin/out
+
 # IDE 和编辑器
 .vscode/
 .idea/
@@ -34,6 +42,10 @@ docker-compose.yml
 docker-compose.*.yml
 .dockerignore
 Dockerfile*
+
+# 环境和敏感文件
+.env
+.env.*
 
 # 临时文件
 /tmp/

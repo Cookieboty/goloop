@@ -11,6 +11,9 @@ RUN npm ci
 COPY web/ .
 RUN npm run build
 
+# Verify static export produced the expected output
+RUN test -f /web/out/index.html && test -d /web/out/_next
+
 # Stage 2: Build Go binary
 FROM golang:1.25-alpine AS builder
 
@@ -21,8 +24,12 @@ RUN go mod download
 
 COPY . .
 
-# Copy compiled frontend into expected embed location
+# Remove any stale embed directory, then copy fresh frontend build
+RUN rm -rf ./internal/admin/out
 COPY --from=frontend /web/out ./internal/admin/out
+
+# Verify the _next directory is present before compiling
+RUN ls ./internal/admin/out/_next/static/chunks/ | head -3
 
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /server ./cmd/server
 
