@@ -52,7 +52,11 @@ func (t *RequestTransformer) Transform(ctx context.Context, req *model.GoogleReq
 		if ic.ImageSize != "" {
 			input.Resolution = ic.ImageSize
 		}
-		if ic.OutputFormat != "" {
+		// OutputFormat is a non-standard convenience field kept for backward compatibility.
+		// The Google API canonical field is imageOutputOptions.mimeType; prefer it when present.
+		if ic.ImageOutputOptions != nil && ic.ImageOutputOptions.MimeType != "" {
+			input.OutputFormat = ic.ImageOutputOptions.MimeType
+		} else if ic.OutputFormat != "" {
 			input.OutputFormat = ic.OutputFormat
 		}
 	}
