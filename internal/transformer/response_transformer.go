@@ -22,7 +22,9 @@ func NewResponseTransformer(store *storage.Store) *ResponseTransformer {
 
 // ToGoogleResponse converts successful KIE.AI result URLs to a Google API response.
 // All images are downloaded concurrently and embedded as inlineData.
-func (t *ResponseTransformer) ToGoogleResponse(ctx context.Context, resultURLs []string) (*model.GoogleResponse, error) {
+// imageOnly should be true when the request's responseModalities contains only
+// "image" (no "text"), in which case the descriptive text part is omitted.
+func (t *ResponseTransformer) ToGoogleResponse(ctx context.Context, resultURLs []string, imageOnly bool) (*model.GoogleResponse, error) {
 	if len(resultURLs) == 0 {
 		return nil, fmt.Errorf("response_transformer: no result URLs")
 	}
@@ -55,8 +57,11 @@ func (t *ResponseTransformer) ToGoogleResponse(ctx context.Context, resultURLs [
 		results[r.idx] = r
 	}
 
-	parts := []model.Part{
-		{Text: fmt.Sprintf("Generated %d image(s) successfully.", len(resultURLs))},
+	var parts []model.Part
+	if !imageOnly {
+		parts = append(parts, model.Part{
+			Text: fmt.Sprintf("Generated %d image(s) successfully.", len(resultURLs)),
+		})
 	}
 
 	for _, r := range results {
@@ -83,7 +88,8 @@ func (t *ResponseTransformer) ToGoogleResponse(ctx context.Context, resultURLs [
 }
 
 // ToGoogleStreamingResponse 转换为 SSE streaming 响应格式
-func (t *ResponseTransformer) ToGoogleStreamingResponse(ctx context.Context, resultURLs []string, responseID string) (*model.StreamingResponse, error) {
+// imageOnly 含义同 ToGoogleResponse。
+func (t *ResponseTransformer) ToGoogleStreamingResponse(ctx context.Context, resultURLs []string, responseID string, imageOnly bool) (*model.StreamingResponse, error) {
 	if len(resultURLs) == 0 {
 		return nil, fmt.Errorf("response_transformer: no result URLs")
 	}

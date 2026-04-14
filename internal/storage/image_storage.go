@@ -25,14 +25,19 @@ type Store struct {
 	httpClient *http.Client
 }
 
-func NewStore(localPath, baseURL string) (*Store, error) {
+// NewStore creates a new image store. downloadTimeout controls how long a
+// single image download may take; pass 0 to use the default of 2 minutes.
+func NewStore(localPath, baseURL string, downloadTimeout time.Duration) (*Store, error) {
+	if downloadTimeout <= 0 {
+		downloadTimeout = 2 * time.Minute
+	}
 	if err := os.MkdirAll(localPath, 0755); err != nil {
 		return nil, fmt.Errorf("storage: mkdir %q: %w", localPath, err)
 	}
 	return &Store{
 		localPath:  localPath,
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{Timeout: downloadTimeout},
 	}, nil
 }
 

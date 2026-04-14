@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,6 +48,7 @@ type Channel struct {
 	respTransform  *ResponseTransformer
 	cfg            Config
 	activeAccounts sync.Map // taskID -> core.Account; used to call pool.Return on completion
+	imageOnlyTasks sync.Map // taskID -> bool; true when request has responseModalities=["image"] only
 }
 
 // NewChannel creates a new KIE.AI channel plugin.
@@ -100,7 +102,7 @@ func (ch *Channel) SubmitTask(ctx context.Context, req *model.GoogleRequest, mod
 		return "", "", fmt.Errorf("kieai: marshal: %w", err)
 	}
 
-	log.Debug("submitTask: creating job")
+	log.Info("submitTask: creating job", "body", string(body))
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		ch.BaseURL+"/api/v1/jobs/createTask", bytes.NewReader(body))
@@ -151,8 +153,24 @@ func (ch *Channel) SubmitTask(ctx context.Context, req *model.GoogleRequest, mod
 
 	// Store account reference so PollTask can call Return when the task completes.
 	ch.activeAccounts.Store(result.Data.TaskID, acc)
+	// Store whether this task is image-only so PollTask can omit the text part.
+	ch.imageOnlyTasks.Store(result.Data.TaskID, isImageOnly(req))
 	log.Info("submitTask: task created successfully", "taskId", result.Data.TaskID)
 	return result.Data.TaskID, acc.APIKey(), nil
+}
+
+// isImageOnly returns true when the request's responseModalities contains only
+// "image" (and no "text"), indicating the caller does not want a text part.
+func isImageOnly(req *model.GoogleRequest) bool {
+	if req.GenerationConfig == nil || len(req.GenerationConfig.ResponseModalities) == 0 {
+		return false
+	}
+	for _, m := range req.GenerationConfig.ResponseModalities {
+		if strings.EqualFold(m, "text") {
+			return false
+		}
+	}
+	return true
 }
 
 func (ch *Channel) PollTask(ctx context.Context, apiKey, taskID string) (*model.GoogleResponse, error) {
@@ -195,7 +213,11 @@ func (ch *Channel) PollTask(ctx context.Context, apiKey, taskID string) (*model.
 			if record.ResultJSON() == nil || len(record.ResultJSON().ResultURLs) == 0 {
 				return nil, fmt.Errorf("kieai: no result URLs")
 			}
-			resp, err := ch.respTransform.ToGoogleResponse(ctx, record.ResultJSON().ResultURLs)
+			imageOnly := false
+			if v, ok := ch.imageOnlyTasks.LoadAndDelete(taskID); ok {
+				imageOnly, _ = v.(bool)
+			}
+			resp, err := ch.respTransform.ToGoogleResponse(ctx, record.ResultJSON().ResultURLs, imageOnly)
 			if err == nil {
 				pollSuccess = true
 			}

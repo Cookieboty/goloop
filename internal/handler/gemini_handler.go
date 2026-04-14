@@ -20,17 +20,16 @@ import (
 	"goloop/internal/transformer"
 )
 
-const maxRequestBodyBytes = 10 * 1024 * 1024 // 10MB
-
 // GeminiHandler handles POST /v1beta/models/{model}:generateContent
 type GeminiHandler struct {
-	router          *core.Router
-	registry        *core.PluginRegistry
-	issuer          *core.JWTIssuer
-	storage         *storage.Store
-	taskManager     *kieai.TaskManager
-	reqTransformer  *transformer.RequestTransformer
-	respTransformer *transformer.ResponseTransformer
+	router              *core.Router
+	registry            *core.PluginRegistry
+	issuer              *core.JWTIssuer
+	storage             *storage.Store
+	taskManager         *kieai.TaskManager
+	reqTransformer      *transformer.RequestTransformer
+	respTransformer     *transformer.ResponseTransformer
+	maxRequestBodyBytes int64
 }
 
 func NewGeminiHandler(
@@ -41,15 +40,20 @@ func NewGeminiHandler(
 	taskManager *kieai.TaskManager,
 	reqTransformer *transformer.RequestTransformer,
 	respTransformer *transformer.ResponseTransformer,
+	maxRequestBodyBytes int64,
 ) *GeminiHandler {
+	if maxRequestBodyBytes <= 0 {
+		maxRequestBodyBytes = 50 * 1024 * 1024 // 50MB default
+	}
 	return &GeminiHandler{
-		router:          router,
-		registry:        registry,
-		issuer:          issuer,
-		storage:         storage,
-		taskManager:     taskManager,
-		reqTransformer:  reqTransformer,
-		respTransformer: respTransformer,
+		router:              router,
+		registry:            registry,
+		issuer:              issuer,
+		storage:             storage,
+		taskManager:         taskManager,
+		reqTransformer:      reqTransformer,
+		respTransformer:     respTransformer,
+		maxRequestBodyBytes: maxRequestBodyBytes,
 	}
 }
 
@@ -220,7 +224,7 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 				h.router.RecordResult(candidate.Name(), false, time.Since(start).Milliseconds())
 				return
 			}
-			googleResp, err := h.respTransformer.ToGoogleStreamingResponse(ctx, record.ResultJSON().ResultURLs, requestID)
+			googleResp, err := h.respTransformer.ToGoogleStreamingResponse(ctx, record.ResultJSON().ResultURLs, requestID, isImageOnlyRequest(googleReq))
 			if err != nil {
 				chLog.Error("response transform failed", "err", err)
 				gErr, _ := transformer.ToGoogleError(500, err.Error())
@@ -290,7 +294,7 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 	requestID := generateRequestID()
 	log := slog.With("requestId", requestID, "googleModel", googleModel)
 
-	limited := io.LimitReader(r.Body, maxRequestBodyBytes+1)
+	limited := io.LimitReader(r.Body, h.maxRequestBodyBytes+1)
 	bodyBytes, err := io.ReadAll(limited)
 	if err != nil {
 		log.Error("read request body", "err", err)
@@ -299,7 +303,7 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 		}, http.StatusBadRequest)
 		return
 	}
-	if len(bodyBytes) > maxRequestBodyBytes {
+	if int64(len(bodyBytes)) > h.maxRequestBodyBytes {
 		writeGoogleError(w, model.GoogleError{
 			Error: model.GoogleErrorDetail{Code: 400, Message: "request body too large", Status: "INVALID_ARGUMENT"},
 		}, http.StatusBadRequest)
@@ -431,6 +435,20 @@ func (h *GeminiHandler) tryChannel(ctx context.Context, ch core.Channel, req *mo
 	}
 	slog.Debug("task submitted", "channel", ch.Name(), "taskId", taskID)
 	return ch.PollTask(ctx, apiKey, taskID)
+}
+
+// isImageOnlyRequest returns true when the request's responseModalities
+// contains only "image" (no "text"), so callers can omit the descriptive text part.
+func isImageOnlyRequest(req *model.GoogleRequest) bool {
+	if req == nil || req.GenerationConfig == nil || len(req.GenerationConfig.ResponseModalities) == 0 {
+		return false
+	}
+	for _, m := range req.GenerationConfig.ResponseModalities {
+		if strings.EqualFold(m, "text") {
+			return false
+		}
+	}
+	return true
 }
 
 func writeGoogleError(w http.ResponseWriter, e model.GoogleError, httpCode int) {

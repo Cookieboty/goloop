@@ -19,9 +19,10 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port         int
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	Port                int
+	ReadTimeout         time.Duration
+	WriteTimeout        time.Duration
+	MaxRequestBodyBytes int64
 }
 
 type JWTConfig struct {
@@ -30,9 +31,10 @@ type JWTConfig struct {
 }
 
 type StorageConfig struct {
-	Type      string
-	LocalPath string
-	BaseURL   string
+	Type            string
+	LocalPath       string
+	BaseURL         string
+	DownloadTimeout time.Duration
 }
 
 type HealthConfig struct {
@@ -172,18 +174,20 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		AdminPassword: getEnv("ADMIN_PASSWORD", ""),
 		Server: ServerConfig{
-			Port:         getEnvInt("SERVER_PORT", 8080),
-			ReadTimeout:  getEnvDuration("SERVER_READ_TIMEOUT", "130s"),
-			WriteTimeout: getEnvDuration("SERVER_WRITE_TIMEOUT", "130s"),
+			Port:                getEnvInt("SERVER_PORT", 8080),
+			ReadTimeout:         getEnvDuration("SERVER_READ_TIMEOUT", "130s"),
+			WriteTimeout:        getEnvDuration("SERVER_WRITE_TIMEOUT", "130s"),
+			MaxRequestBodyBytes: int64(getEnvInt("SERVER_MAX_REQUEST_BODY_MB", 50)) * 1024 * 1024,
 		},
 		JWT: JWTConfig{
 			Secret: getEnv("JWT_SECRET", "dev-secret-change-in-production"),
 			Expiry: getEnvDuration("JWT_EXPIRY", "24h"),
 		},
 		Storage: StorageConfig{
-			Type:      getEnv("STORAGE_TYPE", "local"),
-			LocalPath: getEnv("STORAGE_LOCAL_PATH", "/tmp/images"),
-			BaseURL:   getEnv("STORAGE_BASE_URL", ""),
+			Type:            getEnv("STORAGE_TYPE", "local"),
+			LocalPath:       getEnv("STORAGE_LOCAL_PATH", "/tmp/images"),
+			BaseURL:         getEnv("STORAGE_BASE_URL", ""),
+			DownloadTimeout: getEnvDuration("STORAGE_DOWNLOAD_TIMEOUT", "120s"),
 		},
 		Health: HealthConfig{
 			ProbeInterval:     getEnvDuration("HEALTH_PROBE_INTERVAL", "30s"),

@@ -31,7 +31,7 @@ func setupIntegrationTest(t *testing.T, kieaiHandler http.Handler, cdnResultURL 
 	t.Cleanup(kieaiSrv.Close)
 
 	dir := t.TempDir()
-	store, err := storage.NewStore(dir, "http://localhost/images")
+	store, err := storage.NewStore(dir, "http://localhost/images", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func setupIntegrationTest(t *testing.T, kieaiHandler http.Handler, cdnResultURL 
 	}, 2) // 2 workers for test
 	t.Cleanup(taskManager.Stop)
 
-	h := NewGeminiHandler(router, registry, issuer, store, taskManager, reqTr, respTr)
+	h := NewGeminiHandler(router, registry, issuer, store, taskManager, reqTr, respTr, 10*1024*1024)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	return mux, issuer

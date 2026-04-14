@@ -18,13 +18,16 @@ func NewResponseTransformer(store *storage.Store) *ResponseTransformer {
 	return &ResponseTransformer{store: store}
 }
 
-func (t *ResponseTransformer) ToGoogleResponse(ctx context.Context, resultURLs []string) (*model.GoogleResponse, error) {
+// ToGoogleResponse downloads all result images concurrently and returns a
+// Google API response. When imageOnly is true (caller requested only images
+// via responseModalities), the descriptive text part is omitted.
+func (t *ResponseTransformer) ToGoogleResponse(ctx context.Context, resultURLs []string, imageOnly bool) (*model.GoogleResponse, error) {
 	if len(resultURLs) == 0 {
 		return nil, fmt.Errorf("no result URLs")
 	}
 
 	type imgResult struct {
-		idx int
+		idx  int
 		data []byte
 		err  error
 	}
@@ -46,7 +49,12 @@ func (t *ResponseTransformer) ToGoogleResponse(ctx context.Context, resultURLs [
 		results[r.idx] = r
 	}
 
-	parts := []model.Part{{Text: fmt.Sprintf("Generated %d image(s) successfully.", len(resultURLs))}}
+	var parts []model.Part
+	if !imageOnly {
+		parts = append(parts, model.Part{
+			Text: fmt.Sprintf("Generated %d image(s) successfully.", len(resultURLs)),
+		})
+	}
 	for _, r := range results {
 		if r.err != nil {
 			return nil, fmt.Errorf("download image %d: %w", r.idx, r.err)

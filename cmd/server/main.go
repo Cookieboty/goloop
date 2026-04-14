@@ -42,7 +42,7 @@ func main() {
 	issuer := core.NewJWTIssuer(cfg.JWT.Secret, cfg.JWT.Expiry)
 
 	// Storage
-	store, err := storage.NewStore(cfg.Storage.LocalPath, cfg.Storage.BaseURL)
+	store, err := storage.NewStore(cfg.Storage.LocalPath, cfg.Storage.BaseURL, cfg.Storage.DownloadTimeout)
 	if err != nil {
 		slog.Error("failed to init storage", "err", err)
 		os.Exit(1)
@@ -147,7 +147,7 @@ func main() {
 	respTransformer := transformer.NewResponseTransformer(store)
 
 	// HTTP handlers
-	geminiHandler := handler.NewGeminiHandler(router, registry, issuer, store, taskManager, reqTransformer, respTransformer)
+	geminiHandler := handler.NewGeminiHandler(router, registry, issuer, store, taskManager, reqTransformer, respTransformer, cfg.Server.MaxRequestBodyBytes)
 	adminHandler := handler.NewAdminHandler(issuer, registry, health, cfg.AdminPassword)
 
 	mux := http.NewServeMux()

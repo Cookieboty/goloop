@@ -19,7 +19,7 @@ func newTestStore(t *testing.T) *storage.Store {
 	dir := t.TempDir()
 	srv := httptest.NewServer(http.FileServer(http.Dir(dir)))
 	t.Cleanup(srv.Close)
-	store, err := storage.NewStore(dir, srv.URL)
+	store, err := storage.NewStore(dir, srv.URL, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
