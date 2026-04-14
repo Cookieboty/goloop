@@ -96,13 +96,36 @@ func isStreamingRequest(r *http.Request) bool {
 		strings.Contains(accept, "multipart/x-mixed-replace")
 }
 
+// httpResponseWriter adapts http.ResponseWriter + http.Flusher into
+// the core.ResponseWriter interface expected by streaming channel methods.
+type httpResponseWriter struct {
+	http.ResponseWriter
+	flusher http.Flusher
+}
+
+func (rw *httpResponseWriter) Flush() { rw.flusher.Flush() }
+
 // handleGenerateContentStreaming handles SSE streaming responses.
-// It tries each channel in priority order, falling back on failure.
-// Note: once SSE headers are written (after the first successful SubmitTask),
-// we cannot fall back further — errors are reported via SSE error events.
-func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r *http.Request, googleModel string, googleReq *model.GoogleRequest, requestID string) {
+//
+// Priority order for each channel candidate:
+//  1. RawStreamGenerator  — zero-conversion pipe (gemini native)
+//  2. StreamGenerator     — format-converted stream (openai -> google SSE)
+//  3. SubmitTask+Poll     — async KIE task path (legacy)
+//
+// For path 1 and 2 we can fall back if the upstream request fails before
+// headers are written. Once headers are committed (path 3), errors are
+// reported via SSE error events instead.
+func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r *http.Request, googleModel string, googleReq *model.GoogleRequest, bodyBytes []byte, requestID string) {
 	ctx := r.Context()
 	log := slog.With("requestId", requestID, "googleModel", googleModel)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeGoogleError(w, model.GoogleError{
+			Error: model.GoogleErrorDetail{Code: 500, Message: "streaming not supported", Status: "INTERNAL"},
+		}, http.StatusInternalServerError)
+		return
+	}
 
 	channels, err := h.router.RouteWithFallback(ctx)
 	if err != nil {
@@ -113,103 +136,114 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 		return
 	}
 
-	// Try each channel in priority order. For streaming we must commit to a
-	// channel before writing headers, so we attempt SubmitTask first and only
-	// fall back if it fails before headers are sent.
-	var (
-		ch      core.Channel
-		taskID  string
-		apiKey  string
-		submitErr error
-	)
+	rw := &httpResponseWriter{ResponseWriter: w, flusher: flusher}
+
 	for _, candidate := range channels {
-		taskID, apiKey, submitErr = candidate.SubmitTask(ctx, googleReq, googleModel)
-		if submitErr == nil {
-			ch = candidate
-			break
-		}
-		if ctx.Err() != nil {
-			log.Info("request cancelled by client during submitTask, not recording failure", "channel", candidate.Name(), "err", submitErr)
-			break
-		}
-		log.Warn("channel submitTask failed, trying next", "channel", candidate.Name(), "err", submitErr)
-		h.router.RecordResult(candidate.Name(), false, 0)
-	}
-
-	if ch == nil {
-		log.Error("all channels failed at submitTask", "err", submitErr)
-		h.writeSSEError(w, model.GoogleError{
-			Error: model.GoogleErrorDetail{Code: 503, Message: "all channels failed: " + submitErr.Error(), Status: "UNAVAILABLE"},
-		}, http.StatusServiceUnavailable)
-		return
-	}
-
-	log = log.With("channel", ch.Name(), "taskId", taskID)
-	log.Info("task created, polling for result")
-
-	resultCh := h.taskManager.SubmitTaskStreaming(ctx, apiKey, taskID)
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Request-Id", requestID)
-	w.WriteHeader(http.StatusOK)
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		h.writeSSEError(w, model.GoogleError{
-			Error: model.GoogleErrorDetail{Code: 500, Message: "streaming not supported", Status: "INTERNAL"},
-		}, http.StatusInternalServerError)
-		return
-	}
-
-	h.writeSSEEvent(w, flusher, "event: connection\ndata: {\"status\":\"connected\"}\n\n")
-
-	select {
-	case result := <-resultCh:
+		chLog := log.With("channel", candidate.Name())
 		start := time.Now()
-		if result.Error != nil {
-			log.Error("task failed", "err", result.Error)
-			var tErr *kieai.TaskFailedError
-			if errors.As(result.Error, &tErr) {
-				gErr, _ := transformer.ToGoogleError(500, tErr.Reason)
-				h.writeSSEError(w, gErr, 500)
-			} else {
-				gErr, _ := transformer.ToGoogleError(500, result.Error.Error())
-				h.writeSSEError(w, gErr, 500)
+
+		// --- Path 1: RawStreamGenerator (gemini native pass-through) ---
+		if rawStream, ok := candidate.(core.RawStreamGenerator); ok {
+			chLog.Info("using raw stream path")
+			if err := rawStream.StreamRaw(ctx, bodyBytes, googleModel, rw); err != nil {
+				if ctx.Err() != nil {
+					chLog.Info("request cancelled, not recording failure")
+					return
+				}
+				h.router.RecordResult(candidate.Name(), false, time.Since(start).Milliseconds())
+				chLog.Warn("raw stream failed, trying next channel", "err", err)
+				continue
 			}
-			h.router.RecordResult(ch.Name(), false, time.Since(start).Milliseconds())
+			h.router.RecordResult(candidate.Name(), true, time.Since(start).Milliseconds())
 			return
 		}
 
-		record := result.Record
-		if record.ResultJSON() == nil || len(record.ResultJSON().ResultURLs) == 0 {
-			log.Error("task succeeded but no result URLs")
-			gErr, _ := transformer.ToGoogleError(500, "no result URLs")
-			h.writeSSEError(w, gErr, 500)
-			h.router.RecordResult(ch.Name(), false, time.Since(start).Milliseconds())
+		// --- Path 2: StreamGenerator (format-converted stream, e.g. openai) ---
+		if streamGen, ok := candidate.(core.StreamGenerator); ok {
+			chLog.Info("using converted stream path")
+			if err := streamGen.Stream(ctx, googleReq, googleModel, rw); err != nil {
+				if ctx.Err() != nil {
+					chLog.Info("request cancelled, not recording failure")
+					return
+				}
+				h.router.RecordResult(candidate.Name(), false, time.Since(start).Milliseconds())
+				chLog.Warn("stream failed, trying next channel", "err", err)
+				continue
+			}
+			h.router.RecordResult(candidate.Name(), true, time.Since(start).Milliseconds())
 			return
 		}
 
-		googleResp, err := h.respTransformer.ToGoogleStreamingResponse(ctx, record.ResultJSON().ResultURLs, requestID)
-		if err != nil {
-			log.Error("response transform failed", "err", err)
-			gErr, _ := transformer.ToGoogleError(500, err.Error())
-			h.writeSSEError(w, gErr, 500)
-			h.router.RecordResult(ch.Name(), false, time.Since(start).Milliseconds())
-			return
+		// --- Path 3: legacy async SubmitTask + Poll (KIE) ---
+		chLog.Info("using async task stream path")
+		taskID, apiKey, submitErr := candidate.SubmitTask(ctx, googleReq, googleModel)
+		if submitErr != nil {
+			if ctx.Err() != nil {
+				chLog.Info("request cancelled during submitTask, not recording failure", "err", submitErr)
+				return
+			}
+			h.router.RecordResult(candidate.Name(), false, 0)
+			chLog.Warn("submitTask failed, trying next channel", "err", submitErr)
+			continue
 		}
 
-		h.writeSSEData(w, flusher, googleResp)
-		h.writeSSEEvent(w, flusher, "data: [DONE]\n\n")
-		h.router.RecordResult(ch.Name(), true, time.Since(start).Milliseconds())
+		chLog.Info("task created, polling for result", "taskId", taskID)
+		resultCh := h.taskManager.SubmitTaskStreaming(ctx, apiKey, taskID)
 
-	case <-ctx.Done():
-		log.Info("request cancelled")
-		h.writeSSEError(w, model.GoogleError{
-			Error: model.GoogleErrorDetail{Code: 499, Message: "client closed request", Status: "CANCELLED"},
-		}, 499)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Request-Id", requestID)
+		w.WriteHeader(http.StatusOK)
+		h.writeSSEEvent(w, flusher, "event: connection\ndata: {\"status\":\"connected\"}\n\n")
+
+		select {
+		case result := <-resultCh:
+			if result.Error != nil {
+				chLog.Error("task failed", "err", result.Error)
+				var tErr *kieai.TaskFailedError
+				if errors.As(result.Error, &tErr) {
+					gErr, _ := transformer.ToGoogleError(500, tErr.Reason)
+					h.writeSSEError(w, gErr, 500)
+				} else {
+					gErr, _ := transformer.ToGoogleError(500, result.Error.Error())
+					h.writeSSEError(w, gErr, 500)
+				}
+				h.router.RecordResult(candidate.Name(), false, time.Since(start).Milliseconds())
+				return
+			}
+			record := result.Record
+			if record.ResultJSON() == nil || len(record.ResultJSON().ResultURLs) == 0 {
+				chLog.Error("task succeeded but no result URLs")
+				gErr, _ := transformer.ToGoogleError(500, "no result URLs")
+				h.writeSSEError(w, gErr, 500)
+				h.router.RecordResult(candidate.Name(), false, time.Since(start).Milliseconds())
+				return
+			}
+			googleResp, err := h.respTransformer.ToGoogleStreamingResponse(ctx, record.ResultJSON().ResultURLs, requestID)
+			if err != nil {
+				chLog.Error("response transform failed", "err", err)
+				gErr, _ := transformer.ToGoogleError(500, err.Error())
+				h.writeSSEError(w, gErr, 500)
+				h.router.RecordResult(candidate.Name(), false, time.Since(start).Milliseconds())
+				return
+			}
+			h.writeSSEData(w, flusher, googleResp)
+			h.writeSSEEvent(w, flusher, "data: [DONE]\n\n")
+			h.router.RecordResult(candidate.Name(), true, time.Since(start).Milliseconds())
+		case <-ctx.Done():
+			chLog.Info("request cancelled")
+			h.writeSSEError(w, model.GoogleError{
+				Error: model.GoogleErrorDetail{Code: 499, Message: "client closed request", Status: "CANCELLED"},
+			}, 499)
+		}
+		return
 	}
+
+	log.Error("all channels failed for streaming request")
+	h.writeSSEError(w, model.GoogleError{
+		Error: model.GoogleErrorDetail{Code: 503, Message: "all channels failed", Status: "UNAVAILABLE"},
+	}, http.StatusServiceUnavailable)
 }
 
 func (h *GeminiHandler) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, data string) {
@@ -297,7 +331,7 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 	)
 
 	if isStreamingRequest(r) {
-		h.handleGenerateContentStreaming(w, r, googleModel, &googleReq, requestID)
+		h.handleGenerateContentStreaming(w, r, googleModel, &googleReq, bodyBytes, requestID)
 		return
 	}
 
@@ -316,6 +350,29 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 	for _, ch := range channels {
 		chLog := log.With("channel", ch.Name())
 		start := time.Now()
+
+		// Fast path: channels implementing RawBodyGenerator bypass struct
+		// conversion entirely and return raw bytes for direct pass-through.
+		if rawGen, ok := ch.(core.RawBodyGenerator); ok {
+			rawResp, err := rawGen.GenerateRaw(ctx, bodyBytes, googleModel)
+			latency := time.Since(start).Milliseconds()
+			if err == nil {
+				h.router.RecordResult(ch.Name(), true, latency)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write(rawResp)
+				return
+			}
+			if ctx.Err() != nil {
+				chLog.Info("request cancelled by client, not recording failure", "err", err)
+				lastErr = err
+				break
+			}
+			h.router.RecordResult(ch.Name(), false, latency)
+			chLog.Warn("channel failed, trying next", "err", err)
+			lastErr = err
+			continue
+		}
 
 		googleResp, err := h.tryChannel(ctx, ch, &googleReq, googleModel)
 		latency := time.Since(start).Milliseconds()
@@ -355,6 +412,8 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 // tryChannel attempts to complete a request on a single channel.
 // It first tries Generate (synchronous path); if the channel returns
 // ErrNotSupported it falls back to SubmitTask + PollTask (async path).
+// Channels implementing RawBodyGenerator are handled before calling this
+// function and never reach tryChannel.
 func (h *GeminiHandler) tryChannel(ctx context.Context, ch core.Channel, req *model.GoogleRequest, googleModel string) (*model.GoogleResponse, error) {
 	// 1. Try synchronous Generate path.
 	resp, err := ch.Generate(ctx, req, googleModel)

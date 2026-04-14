@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"goloop/internal/admin"
+	"goloop/internal/channels/gemini"
 	"goloop/internal/channels/kieai"
 	"goloop/internal/channels/subrouter"
 	"goloop/internal/config"
@@ -100,6 +101,18 @@ func main() {
 				ProbeModel: probeModel,
 			})
 			registry.Register(subCh)
+			slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
+		case "gemini":
+			pool := core.NewDefaultAccountPool()
+			for _, acc := range chCfg.Accounts {
+				pool.AddAccount(acc.APIKey, acc.Weight)
+			}
+			timeout := chCfg.Timeout
+			if timeout == 0 {
+				timeout = 120 * time.Second
+			}
+			gemCh := gemini.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, timeout)
+			registry.Register(gemCh)
 			slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
 		default:
 			slog.Warn("unknown channel type, skipping", "name", name, "type", chCfg.Type)
