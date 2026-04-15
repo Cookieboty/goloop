@@ -82,7 +82,7 @@ func (h *AdminHandler) handleIssueToken(w http.ResponseWriter, r *http.Request) 
 		Channel string `json:"channel"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Subject == "" {
@@ -105,7 +105,7 @@ func (h *AdminHandler) handleIssueToken(w http.ResponseWriter, r *http.Request) 
 	}
 	token, err := h.issuer.Issue(claims)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		writeJSONError(w, http.StatusInternalServerError, "failed to issue token")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -120,7 +120,7 @@ func (h *AdminHandler) handleQuickToken(w http.ResponseWriter, r *http.Request) 
 	}
 	token, err := h.issuer.Issue(claims)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		writeJSONError(w, http.StatusInternalServerError, "failed to issue token")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -224,7 +224,7 @@ func (h *AdminHandler) handleChannelOp(w http.ResponseWriter, r *http.Request) {
 			Weight int `json:"weight"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSONError(w, http.StatusBadRequest, err.Error())
+			writeJSONError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 		if hasOps {
@@ -253,7 +253,7 @@ func (h *AdminHandler) handleChannelWeight(w http.ResponseWriter, r *http.Reques
 		Weight  int    `json:"weight"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Weight <= 0 {

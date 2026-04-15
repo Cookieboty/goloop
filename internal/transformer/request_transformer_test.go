@@ -19,7 +19,7 @@ func newTestStore(t *testing.T) *storage.Store {
 	dir := t.TempDir()
 	srv := httptest.NewServer(http.FileServer(http.Dir(dir)))
 	t.Cleanup(srv.Close)
-	store, err := storage.NewStore(dir, srv.URL, 0)
+	store, err := storage.NewStore(dir, srv.URL, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ var testModelMapping = map[string]config.ModelDefaults{
 
 func TestTransform_TextOnly(t *testing.T) {
 	store := newTestStore(t)
-	tr := NewRequestTransformer(store, testModelMapping)
+	tr := NewRequestTransformer(store, testModelMapping, 0)
 
 	req := &model.GoogleRequest{
 		Contents: []model.Content{
@@ -62,7 +62,7 @@ func TestTransform_TextOnly(t *testing.T) {
 
 func TestTransform_ImageConfigOverride(t *testing.T) {
 	store := newTestStore(t)
-	tr := NewRequestTransformer(store, testModelMapping)
+	tr := NewRequestTransformer(store, testModelMapping, 0)
 
 	req := &model.GoogleRequest{
 		Contents: []model.Content{
@@ -91,7 +91,7 @@ func TestTransform_ImageConfigOverride(t *testing.T) {
 
 func TestTransform_InlineData(t *testing.T) {
 	store := newTestStore(t)
-	tr := NewRequestTransformer(store, testModelMapping)
+	tr := NewRequestTransformer(store, testModelMapping, 0)
 
 	imgBytes := []byte("fake-png-content")
 	b64 := base64.StdEncoding.EncodeToString(imgBytes)
@@ -121,7 +121,7 @@ func TestTransform_InlineData(t *testing.T) {
 
 func TestTransform_FileData(t *testing.T) {
 	store := newTestStore(t)
-	tr := NewRequestTransformer(store, testModelMapping)
+	tr := NewRequestTransformer(store, testModelMapping, 0)
 
 	req := &model.GoogleRequest{
 		Contents: []model.Content{
@@ -142,7 +142,7 @@ func TestTransform_FileData(t *testing.T) {
 
 func TestTransform_UnknownModel(t *testing.T) {
 	store := newTestStore(t)
-	tr := NewRequestTransformer(store, testModelMapping)
+	tr := NewRequestTransformer(store, testModelMapping, 0)
 	_, err := tr.Transform(context.Background(), &model.GoogleRequest{}, "unknown-model")
 	if err == nil {
 		t.Error("expected error for unknown model")
@@ -151,7 +151,7 @@ func TestTransform_UnknownModel(t *testing.T) {
 
 func TestTransform_PromptTooLong(t *testing.T) {
 	store := newTestStore(t)
-	tr := NewRequestTransformer(store, testModelMapping)
+	tr := NewRequestTransformer(store, testModelMapping, 0)
 
 	longText := make([]byte, maxPromptLen+1)
 	for i := range longText {

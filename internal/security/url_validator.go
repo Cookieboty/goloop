@@ -47,10 +47,11 @@ func ValidateImageURL(rawURL string) error {
 
 	host := u.Hostname()
 
-	// 2. 禁止特殊域名
+	// 2. 禁止特殊域名（精确匹配或后缀匹配）
 	hostLower := strings.ToLower(host)
 	for _, blocked := range blockedDomains {
-		if strings.Contains(hostLower, blocked) {
+		// 精确匹配或作为后缀（如 .metadata.google.internal）
+		if hostLower == blocked || strings.HasSuffix(hostLower, "."+blocked) {
 			return fmt.Errorf("blocked domain: %s", host)
 		}
 	}

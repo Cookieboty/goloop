@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"goloop/internal/model"
@@ -21,38 +22,29 @@ type BaseChannel struct {
 	BaseURL     string
 	HTTPClient  *http.Client
 	Pool        *DefaultAccountPool
-	weight      int64 // accessed via atomic-style helpers; stored as plain int64
-	// weight is not atomic.Int64 so BaseChannel can be value-copied in NewBaseChannel.
-	// Concrete channels should call SetChannelWeight/Weight via the pointer receiver.
-	weightMu weightHolder
-}
-
-// weightHolder wraps the weight so BaseChannel can be returned by value from
-// NewBaseChannel while still allowing atomic-like updates.
-type weightHolder struct {
-	mu  interface{} // unused placeholder; weight updates use BaseChannel.weightMu
-	val int
+	weight      atomic.Int32
 }
 
 // NewBaseChannel constructs a BaseChannel with the given parameters.
 func NewBaseChannel(name, baseURL string, weight int, pool *DefaultAccountPool, timeout time.Duration) BaseChannel {
-	return BaseChannel{
+	bc := BaseChannel{
 		ChannelName: name,
 		BaseURL:     baseURL,
 		HTTPClient:  &http.Client{Timeout: timeout},
 		Pool:        pool,
-		weightMu:    weightHolder{val: weight},
 	}
+	bc.weight.Store(int32(weight))
+	return bc
 }
 
 // Name returns the channel's registered name.
 func (b *BaseChannel) Name() string { return b.ChannelName }
 
 // Weight returns the channel's routing weight (priority).
-func (b *BaseChannel) Weight() int { return b.weightMu.val }
+func (b *BaseChannel) Weight() int { return int(b.weight.Load()) }
 
 // SetChannelWeight updates the channel's routing weight at runtime.
-func (b *BaseChannel) SetChannelWeight(w int) { b.weightMu.val = w }
+func (b *BaseChannel) SetChannelWeight(w int) { b.weight.Store(int32(w)) }
 
 // IsAvailable returns true when the pool has at least one account.
 func (b *BaseChannel) IsAvailable() bool {
@@ -133,8 +125,16 @@ func (b *BaseChannel) ListAccounts() []map[string]any {
 		} else if acc.HealthScore() < 0.6 {
 			status = "degraded"
 		}
+		// Mask API key: show first 4 and last 4 characters
+		apiKey := acc.APIKey()
+		maskedKey := apiKey
+		if len(apiKey) > 8 {
+			maskedKey = apiKey[:4] + "..." + apiKey[len(apiKey)-4:]
+		} else if len(apiKey) > 4 {
+			maskedKey = apiKey[:4] + "..."
+		}
 		result[i] = map[string]any{
-			"api_key":              acc.APIKey(),
+			"api_key":              maskedKey,
 			"weight":               acc.Weight(),
 			"status":               status,
 			"usage_count":          acc.UsageCount(),

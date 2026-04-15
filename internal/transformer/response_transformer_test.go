@@ -23,7 +23,7 @@ func TestToGoogleResponse_MultipleImages(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	store, _ := storage.NewStore(dir, srv.URL, 0)
+	store, _ := storage.NewStore(dir, srv.URL, 0, 0)
 	// Use TLS client that skips verification for test
 	store.SetHTTPClient(&http.Client{
 		Transport: &http.Transport{

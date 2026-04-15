@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"goloop/internal/model"
@@ -87,9 +88,9 @@ func (c *Client) CreateTask(ctx context.Context, apiKey string, req *model.KieAI
 
 // GetTaskStatus polls KIE.AI for the current status of a task.
 func (c *Client) GetTaskStatus(ctx context.Context, apiKey, taskID string) (*model.KieAIRecordData, error) {
-	url := c.baseURL + "/api/v1/jobs/recordInfo?taskId=" + taskID
+	reqURL := c.baseURL + "/api/v1/jobs/recordInfo?taskId=" + url.QueryEscape(taskID)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("kieai: build recordInfo request: %w", err)
 	}

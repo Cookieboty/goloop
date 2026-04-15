@@ -20,24 +20,30 @@ import (
 
 // Store saves image bytes to local disk and returns the public HTTP URL.
 type Store struct {
-	localPath  string
-	baseURL    string
-	httpClient *http.Client
+	localPath     string
+	baseURL       string
+	httpClient    *http.Client
+	maxImageBytes int64
 }
 
 // NewStore creates a new image store. downloadTimeout controls how long a
 // single image download may take; pass 0 to use the default of 2 minutes.
-func NewStore(localPath, baseURL string, downloadTimeout time.Duration) (*Store, error) {
+// maxImageBytes limits the maximum image size; pass 0 to use the default of 30MB.
+func NewStore(localPath, baseURL string, downloadTimeout time.Duration, maxImageBytes int64) (*Store, error) {
 	if downloadTimeout <= 0 {
 		downloadTimeout = 2 * time.Minute
+	}
+	if maxImageBytes <= 0 {
+		maxImageBytes = 30 * 1024 * 1024 // 30MB default
 	}
 	if err := os.MkdirAll(localPath, 0755); err != nil {
 		return nil, fmt.Errorf("storage: mkdir %q: %w", localPath, err)
 	}
 	return &Store{
-		localPath:  localPath,
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{Timeout: downloadTimeout},
+		localPath:     localPath,
+		baseURL:       strings.TrimRight(baseURL, "/"),
+		httpClient:    &http.Client{Timeout: downloadTimeout},
+		maxImageBytes: maxImageBytes,
 	}, nil
 }
 
@@ -53,14 +59,14 @@ func (s *Store) SaveBytes(data []byte, ext string) (string, error) {
 	name += ext
 	path := filepath.Join(s.localPath, name)
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return "", fmt.Errorf("storage: write file: %w", err)
 	}
 
 	return s.baseURL + "/" + name, nil
 }
 
-// DownloadToBytes fetches a URL and returns the raw bytes (max 30MB).
+// DownloadToBytes fetches a URL and returns the raw bytes (max configured size).
 // The request is cancelled when ctx is done.
 func (s *Store) DownloadToBytes(ctx context.Context, url string) ([]byte, error) {
 	// SSRF 防护：验证 URL 安全性
@@ -82,14 +88,14 @@ func (s *Store) DownloadToBytes(ctx context.Context, url string) ([]byte, error)
 		return nil, fmt.Errorf("storage: download %q: HTTP %d", url, resp.StatusCode)
 	}
 
-	const maxSize = 30 * 1024 * 1024 // 30MB
+	maxSize := s.maxImageBytes
 	limited := io.LimitReader(resp.Body, maxSize+1)
 	data, err := io.ReadAll(limited)
 	if err != nil {
 		return nil, fmt.Errorf("storage: read body: %w", err)
 	}
-	if len(data) > maxSize {
-		return nil, fmt.Errorf("storage: image exceeds 30MB limit")
+	if int64(len(data)) > maxSize {
+		return nil, fmt.Errorf("storage: image exceeds %dMB limit", maxSize/(1024*1024))
 	}
 	return data, nil
 }

@@ -16,17 +16,24 @@ import (
 const (
 	maxPromptLen  = 20000
 	maxImageCount = 14
-	maxImageBytes = 30 * 1024 * 1024 // 30MB
 )
 
 // RequestTransformer converts Google API requests to KIE.AI requests.
 type RequestTransformer struct {
-	store        *storage.Store
-	modelMapping map[string]config.ModelDefaults
+	store         *storage.Store
+	modelMapping  map[string]config.ModelDefaults
+	maxImageBytes int64
 }
 
-func NewRequestTransformer(store *storage.Store, modelMapping map[string]config.ModelDefaults) *RequestTransformer {
-	return &RequestTransformer{store: store, modelMapping: modelMapping}
+func NewRequestTransformer(store *storage.Store, modelMapping map[string]config.ModelDefaults, maxImageBytes int64) *RequestTransformer {
+	if maxImageBytes <= 0 {
+		maxImageBytes = 30 * 1024 * 1024 // 30MB default
+	}
+	return &RequestTransformer{
+		store:         store,
+		modelMapping:  modelMapping,
+		maxImageBytes: maxImageBytes,
+	}
 }
 
 func (t *RequestTransformer) ListModels() []map[string]any {
@@ -126,9 +133,8 @@ func (t *RequestTransformer) extractPartsContent(req *model.GoogleRequest) (stri
 }
 
 func (t *RequestTransformer) saveInlineData(data *model.InlineData) (string, error) {
-	// Pre-check: base64 encodes ~4/3 of raw size. 30MB decoded → ~40.96MB base64.
-	// Reject early to avoid allocating a huge buffer.
-	const maxBase64Len = 40*1024*1024 + 1024 // 40MB + margin
+	// Pre-check: base64 encodes ~4/3 of raw size. Reject early to avoid allocating a huge buffer.
+	maxBase64Len := int(t.maxImageBytes*4/3) + 1024 // base64 overhead + margin
 	if len(data.Data) > maxBase64Len {
 		return "", fmt.Errorf("base64 payload too large before decode (%d bytes)", len(data.Data))
 	}
@@ -142,8 +148,8 @@ func (t *RequestTransformer) saveInlineData(data *model.InlineData) (string, err
 		}
 	}
 
-	if len(raw) > maxImageBytes {
-		return "", fmt.Errorf("image exceeds 30MB limit (%d bytes)", len(raw))
+	if int64(len(raw)) > t.maxImageBytes {
+		return "", fmt.Errorf("image exceeds %dMB limit (%d bytes)", t.maxImageBytes/(1024*1024), len(raw))
 	}
 
 	ext := mimeToExt(data.MimeType)

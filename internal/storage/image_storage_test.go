@@ -16,7 +16,7 @@ import (
 
 func TestSaveBytes(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStore(dir, "http://localhost:8080/images", 0)
+	store, err := NewStore(dir, "http://localhost:8080/images", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestDownloadToBytes(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	store, _ := NewStore(dir, "http://localhost:8080/images", 0)
+	store, _ := NewStore(dir, "http://localhost:8080/images", 0, 0)
 	// Use TLS client that skips verification for test
 	store.httpClient.Transport = &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -81,7 +81,7 @@ func TestDownloadToBytes_HTTPError(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	store, _ := NewStore(dir, "http://localhost:8080/images", 0)
+	store, _ := NewStore(dir, "http://localhost:8080/images", 0, 0)
 	// Use TLS client that skips verification for test
 	store.httpClient.Transport = &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -96,7 +96,7 @@ func TestDownloadToBytes_HTTPError(t *testing.T) {
 func TestNewStore_MkdirAll(t *testing.T) {
 	dir := t.TempDir()
 	nested := filepath.Join(dir, "a", "b", "c")
-	_, err := NewStore(nested, "http://localhost/images", 0)
+	_, err := NewStore(nested, "http://localhost/images", 0, 0)
 	if err != nil {
 		t.Fatalf("NewStore should create nested dirs: %v", err)
 	}

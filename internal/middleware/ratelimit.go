@@ -2,6 +2,7 @@
 package middleware
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,14 +22,15 @@ type RateLimiter struct {
 
 // NewRateLimiter 创建限流器
 // rps: 每秒请求数, burst: 突发容量
-func NewRateLimiter(rps float64, burst int) *RateLimiter {
+// ctx: 用于控制 cleanup goroutine 的生命周期
+func NewRateLimiter(ctx context.Context, rps float64, burst int) *RateLimiter {
 	rl := &RateLimiter{
 		rps:   rate.Limit(rps),
 		burst: burst,
 	}
 
 	// 定期清理过期 limiter（避免内存泄漏）
-	go rl.cleanup()
+	go rl.cleanup(ctx)
 
 	slog.Info("rate limiter initialized", "rps", rps, "burst", burst)
 
@@ -84,26 +86,32 @@ func extractIP(r *http.Request) string {
 }
 
 // cleanup 定期清理闲置的 limiter
-func (rl *RateLimiter) cleanup() {
+func (rl *RateLimiter) cleanup(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		count := 0
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("rate limiter cleanup stopped")
+			return
+		case <-ticker.C:
+			count := 0
 
-		rl.limiters.Range(func(key, value interface{}) bool {
-			limiter := value.(*rate.Limiter)
+			rl.limiters.Range(func(key, value interface{}) bool {
+				limiter := value.(*rate.Limiter)
 
-			// 如果 limiter 已经闲置（令牌桶满），删除
-			if limiter.Tokens() >= float64(rl.burst) {
-				rl.limiters.Delete(key)
-				count++
+				// 如果 limiter 已经闲置（令牌桶满），删除
+				if limiter.Tokens() >= float64(rl.burst) {
+					rl.limiters.Delete(key)
+					count++
+				}
+				return true
+			})
+
+			if count > 0 {
+				slog.Debug("rate limiter cleanup", "deleted", count)
 			}
-			return true
-		})
-
-		if count > 0 {
-			slog.Debug("rate limiter cleanup", "deleted", count)
 		}
 	}
 }

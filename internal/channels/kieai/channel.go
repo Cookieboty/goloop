@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -102,7 +103,7 @@ func (ch *Channel) SubmitTask(ctx context.Context, req *model.GoogleRequest, mod
 		return "", "", fmt.Errorf("kieai: marshal: %w", err)
 	}
 
-	log.Info("submitTask: creating job", "body", string(body))
+	log.Info("submitTask: creating job", "bodyLen", len(body))
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		ch.BaseURL+"/api/v1/jobs/createTask", bytes.NewReader(body))
@@ -232,7 +233,7 @@ func (ch *Channel) PollTask(ctx context.Context, apiKey, taskID string) (*model.
 
 func (ch *Channel) getTaskStatus(ctx context.Context, apiKey, taskID string) (*model.KieAIRecordData, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		ch.BaseURL+"/api/v1/jobs/recordInfo?taskId="+taskID, nil)
+		ch.BaseURL+"/api/v1/jobs/recordInfo?taskId="+url.QueryEscape(taskID), nil)
 	if err != nil {
 		return nil, err
 	}

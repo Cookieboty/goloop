@@ -7,17 +7,25 @@ import (
 	"fmt"
 	"sync"
 
+	"golang.org/x/sync/semaphore"
 	"goloop/internal/model"
 	"goloop/internal/storage"
 )
 
 // ResponseTransformer converts KIE.AI results to Google API responses.
 type ResponseTransformer struct {
-	store *storage.Store
+	store           *storage.Store
+	downloadSem     *semaphore.Weighted
+	maxConcDownload int64
 }
 
 func NewResponseTransformer(store *storage.Store) *ResponseTransformer {
-	return &ResponseTransformer{store: store}
+	const maxConcurrent = 8 // Limit concurrent downloads to 8
+	return &ResponseTransformer{
+		store:           store,
+		downloadSem:     semaphore.NewWeighted(maxConcurrent),
+		maxConcDownload: maxConcurrent,
+	}
 }
 
 // ToGoogleResponse converts successful KIE.AI result URLs to a Google API response.
@@ -108,6 +116,13 @@ func (t *ResponseTransformer) ToGoogleStreamingResponse(ctx context.Context, res
 		wg.Add(1)
 		go func(idx int, u string) {
 			defer wg.Done()
+			// Acquire semaphore to limit concurrent downloads
+			if err := t.downloadSem.Acquire(ctx, 1); err != nil {
+				ch <- result{idx: idx, err: err}
+				return
+			}
+			defer t.downloadSem.Release(1)
+			
 			data, err := t.store.DownloadToBytes(ctx, u)
 			ch <- result{idx: idx, data: data, err: err}
 		}(i, url)

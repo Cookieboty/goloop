@@ -20,6 +20,7 @@ import (
 	"goloop/internal/core"
 	"goloop/internal/handler"
 	kieaipkg "goloop/internal/kieai"
+	"goloop/internal/middleware"
 	"goloop/internal/storage"
 	"goloop/internal/transformer"
 )
@@ -42,7 +43,7 @@ func main() {
 	issuer := core.NewJWTIssuer(cfg.JWT.Secret, cfg.JWT.Expiry)
 
 	// Storage
-	store, err := storage.NewStore(cfg.Storage.LocalPath, cfg.Storage.BaseURL, cfg.Storage.DownloadTimeout)
+	store, err := storage.NewStore(cfg.Storage.LocalPath, cfg.Storage.BaseURL, cfg.Storage.DownloadTimeout, cfg.Storage.MaxImageBytes)
 	if err != nil {
 		slog.Error("failed to init storage", "err", err)
 		os.Exit(1)
@@ -143,7 +144,7 @@ func main() {
 	defer reaper.Stop()
 
 	// Transformers
-	reqTransformer := transformer.NewRequestTransformer(store, cfg.ModelMapping)
+	reqTransformer := transformer.NewRequestTransformer(store, cfg.ModelMapping, cfg.Storage.MaxImageBytes)
 	respTransformer := transformer.NewResponseTransformer(store)
 
 	// HTTP handlers
@@ -153,6 +154,16 @@ func main() {
 	mux := http.NewServeMux()
 	geminiHandler.RegisterRoutes(mux)
 	adminHandler.RegisterRoutes(mux)
+
+	// Apply rate limiting if configured
+	var handler http.Handler = mux
+	if cfg.RateLimit.RPS > 0 {
+		rateLimitCtx, cancelRateLimit := context.WithCancel(context.Background())
+		defer cancelRateLimit()
+		rateLimiter := middleware.NewRateLimiter(rateLimitCtx, cfg.RateLimit.RPS, cfg.RateLimit.Burst)
+		handler = rateLimiter.Middleware(mux)
+		slog.Info("rate limiting enabled", "rps", cfg.RateLimit.RPS, "burst", cfg.RateLimit.Burst)
+	}
 
 	// Admin UI static files (embedded Next.js static export)
 	uiFS, uiErr := fs.Sub(admin.UIAssets, "out")
@@ -174,7 +185,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}

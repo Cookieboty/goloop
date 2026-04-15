@@ -31,7 +31,7 @@ func setupIntegrationTest(t *testing.T, kieaiHandler http.Handler, cdnResultURL 
 	t.Cleanup(kieaiSrv.Close)
 
 	dir := t.TempDir()
-	store, err := storage.NewStore(dir, "http://localhost/images", 0)
+	store, err := storage.NewStore(dir, "http://localhost/images", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func setupIntegrationTest(t *testing.T, kieaiHandler http.Handler, cdnResultURL 
 		},
 	}
 
-	reqTr := transformer.NewRequestTransformer(store, modelMapping)
+	reqTr := transformer.NewRequestTransformer(store, modelMapping, 0)
 	respTr := transformer.NewResponseTransformer(store)
 	client := kieaipkg.NewClient(kieaiSrv.URL, 10*time.Second)
 	taskManager := kieaipkg.NewTaskManager(client, kieaipkg.PollerConfig{

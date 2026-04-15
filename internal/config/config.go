@@ -13,6 +13,7 @@ type Config struct {
 	JWT           JWTConfig
 	Storage       StorageConfig
 	Health        HealthConfig
+	RateLimit     RateLimitConfig
 	AdminPassword string
 	Channels      map[string]ChannelConfig
 	ModelMapping  map[string]ModelDefaults
@@ -35,6 +36,7 @@ type StorageConfig struct {
 	LocalPath       string
 	BaseURL         string
 	DownloadTimeout time.Duration
+	MaxImageBytes   int64
 }
 
 type HealthConfig struct {
@@ -42,6 +44,11 @@ type HealthConfig struct {
 	ProbeTimeout      time.Duration
 	RecoveryThreshold int
 	RecoveryInterval  time.Duration // how long after last failure before resetting a hard-stopped channel
+}
+
+type RateLimitConfig struct {
+	RPS   float64
+	Burst int
 }
 
 type ChannelConfig struct {
@@ -188,12 +195,17 @@ func Load() (*Config, error) {
 			LocalPath:       getEnv("STORAGE_LOCAL_PATH", "/tmp/images"),
 			BaseURL:         getEnv("STORAGE_BASE_URL", ""),
 			DownloadTimeout: getEnvDuration("STORAGE_DOWNLOAD_TIMEOUT", "120s"),
+			MaxImageBytes:   int64(getEnvInt("STORAGE_MAX_IMAGE_MB", 30)) * 1024 * 1024,
 		},
 		Health: HealthConfig{
 			ProbeInterval:     getEnvDuration("HEALTH_PROBE_INTERVAL", "30s"),
 			ProbeTimeout:      getEnvDuration("HEALTH_PROBE_TIMEOUT", "5s"),
 			RecoveryThreshold: getEnvInt("HEALTH_RECOVERY_THRESHOLD", 2),
 			RecoveryInterval:  getEnvDuration("HEALTH_RECOVERY_INTERVAL", "30m"),
+		},
+		RateLimit: RateLimitConfig{
+			RPS:   float64(getEnvInt("RATELIMIT_RPS", 0)),
+			Burst: getEnvInt("RATELIMIT_BURST", 10),
 		},
 		ModelMapping: map[string]ModelDefaults{
 			"gemini-3.1-flash-image-preview": {
@@ -274,6 +286,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.JWT.Secret == "" {
 		return fmt.Errorf("config: JWT_SECRET is required")
+	}
+	if cfg.JWT.Secret == "dev-secret-change-in-production" {
+		return fmt.Errorf("config: JWT_SECRET must be changed from default value")
 	}
 	if cfg.AdminPassword == "" {
 		return fmt.Errorf("config: ADMIN_PASSWORD is required")

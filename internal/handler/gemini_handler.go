@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -314,7 +313,7 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 	if err := json.Unmarshal(bodyBytes, &googleReq); err != nil {
 		log.Error("unmarshal request", "err", err)
 		writeGoogleError(w, model.GoogleError{
-			Error: model.GoogleErrorDetail{Code: 400, Message: "invalid JSON: " + err.Error(), Status: "INVALID_ARGUMENT"},
+			Error: model.GoogleErrorDetail{Code: 400, Message: "invalid request body", Status: "INVALID_ARGUMENT"},
 		}, http.StatusBadRequest)
 		return
 	}
@@ -331,7 +330,7 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 		"model", googleModel,
 		"auth", maskHeader(r.Header.Get("Authorization")),
 		"contentType", r.Header.Get("Content-Type"),
-		"contents", fmt.Sprintf("%v", googleReq.Contents),
+		"contentsCount", len(googleReq.Contents),
 	)
 
 	if isStreamingRequest(r) {
@@ -408,7 +407,7 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 		writeGoogleError(w, gErr, httpCode)
 	} else {
 		writeGoogleError(w, model.GoogleError{
-			Error: model.GoogleErrorDetail{Code: 503, Message: "all channels failed: " + lastErr.Error(), Status: "UNAVAILABLE"},
+			Error: model.GoogleErrorDetail{Code: 503, Message: "all channels failed", Status: "UNAVAILABLE"},
 		}, http.StatusServiceUnavailable)
 	}
 }
