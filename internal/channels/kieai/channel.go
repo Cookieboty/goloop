@@ -64,10 +64,12 @@ func NewChannel(baseURL string, weight int, pool *AccountPool, cfg Config, store
 		"gemini-2.5-flash-image":         {KieAIModel: "google/nano-banana", AspectRatio: "1:1", Resolution: "1K", OutputFormat: "png"},
 	}
 
+	uploader := NewUploader(baseURL, cfg.Timeout, cfg.RetryAttempts)
+
 	ch := &Channel{
 		BaseChannel:   core.NewBaseChannel("kieai", baseURL, weight, pool, cfg.Timeout),
 		cfg:           cfg,
-		reqTransform:  NewRequestTransformer(modelMapping),
+		reqTransform:  NewRequestTransformer(modelMapping, uploader),
 		respTransform: NewResponseTransformer(store),
 	}
 	return ch
@@ -89,7 +91,7 @@ func (ch *Channel) SubmitTask(ctx context.Context, req *model.GoogleRequest, mod
 	}
 	acc.IncUsage()
 
-	kieReq, err := ch.reqTransform.Transform(ctx, req, modelName)
+	kieReq, err := ch.reqTransform.Transform(ctx, req, modelName, acc.APIKey())
 	if err != nil {
 		log.Warn("submitTask: transform failed", "err", err)
 		ch.Pool.Return(acc, false)

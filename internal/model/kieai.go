@@ -70,3 +70,25 @@ func (r *KieAIRecordData) ResultJSON() *KieAIResult {
 type KieAIResult struct {
 	ResultURLs []string `json:"resultUrls"`
 }
+
+// --- KIE.AI Base64 Upload ---
+
+type KieAIUploadRequest struct {
+	Base64Data string `json:"base64Data"`
+	UploadPath string `json:"uploadPath"`
+	FileName   string `json:"fileName,omitempty"`
+}
+
+type KieAIUploadResponse struct {
+	Success bool   `json:"success"`
+	Code    int    `json:"code"`
+	Msg     string `json:"msg"`
+	Data    struct {
+		DownloadUrl string `json:"downloadUrl"`
+		FileName    string `json:"fileName"`
+		FilePath    string `json:"filePath,omitempty"`
+		FileSize    int    `json:"fileSize,omitempty"`
+		MimeType    string `json:"mimeType,omitempty"`
+		UploadedAt  string `json:"uploadedAt,omitempty"`
+	} `json:"data"`
+}
