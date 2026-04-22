@@ -19,6 +19,7 @@ import (
 // automatically and delegate to the embedded Pool.
 type BaseChannel struct {
 	ChannelName string
+	ChannelType string // Type of channel: "gemini", "kieai", "subrouter", "gpt-image"
 	BaseURL     string
 	HTTPClient  *http.Client
 	Pool        *DefaultAccountPool
@@ -26,9 +27,10 @@ type BaseChannel struct {
 }
 
 // NewBaseChannel constructs a BaseChannel with the given parameters.
-func NewBaseChannel(name, baseURL string, weight int, pool *DefaultAccountPool, timeout time.Duration) BaseChannel {
+func NewBaseChannel(name, ctype, baseURL string, weight int, pool *DefaultAccountPool, timeout time.Duration) BaseChannel {
 	bc := BaseChannel{
 		ChannelName: name,
+		ChannelType: ctype,
 		BaseURL:     baseURL,
 		HTTPClient:  &http.Client{Timeout: timeout},
 		Pool:        pool,
@@ -39,6 +41,9 @@ func NewBaseChannel(name, baseURL string, weight int, pool *DefaultAccountPool, 
 
 // Name returns the channel's registered name.
 func (b *BaseChannel) Name() string { return b.ChannelName }
+
+// Type returns the channel's type identifier.
+func (b *BaseChannel) Type() string { return b.ChannelType }
 
 // Weight returns the channel's routing weight (priority).
 func (b *BaseChannel) Weight() int { return int(b.weight.Load()) }

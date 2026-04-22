@@ -1,6 +1,9 @@
-# goloop — Gemini API 适配中间件
+# goloop — 多协议 AI API 网关
 
-将 Google Gemini API 格式的图片生成请求透明转换为 KIE.AI 异步任务 API，支持轮询、多图返回、本地图片存储，响应完全兼容 Google API 格式。
+支持 Google Gemini 格式和 OpenAI 格式的多协议 AI API 网关，提供：
+- **Google Gemini API** 格式的图片生成请求透明转换为 KIE.AI 异步任务 API
+- **OpenAI API** 格式的 chat completions 和 images 端点透传支持
+- 多渠道负载均衡、健康检查、自动故障转移
 
 ---
 
@@ -20,33 +23,54 @@
 
 ## 架构概览
 
+### 双协议支持
+
 ```
-客户端 (Gemini SDK / curl)
-        │  POST /v1beta/models/{model}:generateContent
-        ▼
-┌─────────────────┐
-│   HTTP Handler  │  提取 API Key，解析请求体，路由
-└────────┬────────┘
-         │
-┌────────▼────────┐
-│ RequestTransfor │  Google 格式 → KIE.AI 格式，处理 base64 图片上传
-└────────┬────────┘
-         │
-┌────────▼────────┐
-│   KIE.AI Client │  提交任务 POST /api/v1/jobs/createTask
-└────────┬────────┘
-         │
-┌────────▼────────┐
-│     Poller      │  指数退避轮询 GET /api/v1/jobs/recordInfo
-│                 │  2s → 10s，最长 120s，连续失败 3 次中止
-└────────┬────────┘
-         │
-┌────────▼────────┐
-│ ResponseTransfo │  并发下载结果图片，base64 编码，返回 Google 格式
-└─────────────────┘
+Gemini 客户端                      OpenAI 客户端
+     │                                  │
+     │ POST /v1beta/models/...          │ POST /v1/chat/completions
+     │                                  │ POST /v1/images/generations
+     ▼                                  ▼
+┌─────────────────┐            ┌─────────────────┐
+│ GeminiHandler   │            │ OpenAIHandler   │
+└────────┬────────┘            └────────┬────────┘
+         │                               │
+         │                               │
+         └───────────┬───────────────────┘
+                     ▼
+            ┌────────────────┐
+            │  Router +      │  类型过滤 + 负载均衡
+            │  HealthTracker │  
+            └────────┬───────┘
+                     │
+         ┌───────────┼──────────┬─────────────┐
+         ▼           ▼          ▼             ▼
+    ┌────────┐  ┌────────┐ ┌──────────┐ ┌──────────┐
+    │ gemini │  │ kieai  │ │subrouter │ │gpt-image │
+    │透传    │  │异步任务│ │Google→   │ │OpenAI    │
+    │        │  │        │ │OpenAI转换│ │透传      │
+    └────────┘  └────────┘ └──────────┘ └──────────┘
+         │           │          │             │
+         ▼           ▼          ▼             ▼
+    Google API  KIE.AI API  OpenAI API  OpenAI API
 ```
 
-**模型映射：**
+### 路由规则
+
+- **Gemini 端点** (`/v1beta/models/...`) → 排除 `gpt-image` 类型渠道
+- **OpenAI 端点** (`/v1/chat/completions`, `/v1/images/*`) → 仅使用 `gpt-image` 类型渠道
+- JWT 中的 `channel` claim 可覆盖路由规则，指定特定渠道
+
+**支持的渠道类型：**
+
+| 渠道类型 | 说明 | 适用端点 | 模式 |
+|---------|------|----------|------|
+| `gemini` | Google 原生 Gemini API | Gemini 端点 | 透传 |
+| `kieai` | KIE.AI 异步任务 API | Gemini 端点 | 异步+格式转换 |
+| `subrouter` / `openai` | OpenAI 兼容 API（用于 Gemini 请求） | Gemini 端点 | Google→OpenAI 转换 |
+| `gpt-image` | OpenAI 兼容 API（透传模式） | OpenAI 端点 | 透传 |
+
+**Gemini 模型映射：**
 
 | Gemini 模型 | KIE.AI 模型 | 类型 | 默认分辨率 |
 |---|---|---|---|
@@ -211,19 +235,23 @@ curl http://localhost:8080/health
 
 ## API 使用
 
-### 认证
+本服务同时支持两种 API 格式：
 
-支持两种方式传入 KIE.AI API Key（透传给 KIE.AI，无需额外配置）：
+### Google Gemini API 格式
+
+#### 认证
+
+支持两种方式传入 API Key：
 
 ```bash
 # 方式 1：x-goog-api-key 头（推荐，兼容 Gemini SDK）
--H "x-goog-api-key: YOUR_KIEAI_API_KEY"
+-H "x-goog-api-key: YOUR_API_KEY"
 
 # 方式 2：Bearer Token
--H "Authorization: Bearer YOUR_KIEAI_API_KEY"
+-H "Authorization: Bearer YOUR_API_KEY"
 ```
 
-### 文生图
+#### 文生图（Gemini 格式）
 
 ```bash
 curl -X POST http://localhost:8080/v1beta/models/gemini-3.1-flash-image-preview:generateContent \
@@ -325,6 +353,74 @@ curl -X POST http://localhost:8080/v1beta/models/gemini-3.1-flash-image-preview:
 | 402 / 429 | 429 | `RESOURCE_EXHAUSTED` |
 | 422 | 400 | `INVALID_ARGUMENT` |
 | 5xx / 其他 | 500 | `INTERNAL` |
+
+---
+
+### OpenAI API 格式
+
+本服务同时支持 OpenAI 格式的 API 端点，所有请求透传到配置的 gpt-image 渠道。
+
+#### 认证
+
+```bash
+# 使用 Bearer Token（OpenAI 标准格式）
+-H "Authorization: Bearer YOUR_API_KEY"
+```
+
+#### Chat Completions（文生图）
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{
+    "model": "gpt-image-2-all",
+    "messages": [{
+      "role": "user",
+      "content": "横版 16:9 电影画幅，黄昏时的海边老灯塔，写实风格"
+    }]
+  }'
+```
+
+#### Images Generations
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{
+    "model": "gpt-image-2-all",
+    "prompt": "横版 16:9 电影画幅，黄昏时的海边老灯塔",
+    "response_format": "url"
+  }'
+```
+
+#### Images Edits（多图编辑）
+
+```bash
+curl -X POST http://localhost:8080/v1/images/edits \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: multipart/form-data" \
+  -F model=gpt-image-2-all \
+  -F "prompt=把图1的人物放进图2的场景，参考图3的画风" \
+  -F "image[]=@image1.png" \
+  -F "image[]=@image2.png" \
+  -F "image[]=@image3.png" \
+  -F response_format=url
+```
+
+#### 错误响应格式（OpenAI 标准）
+
+```json
+{
+  "error": {
+    "message": "No gpt-image channels available",
+    "type": "service_unavailable"
+  }
+}
+```
+
+---
 
 ### 访问已保存图片
 

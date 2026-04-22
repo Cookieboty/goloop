@@ -44,7 +44,7 @@ func NewChannel(name, baseURL string, weight int, pool *core.DefaultAccountPool,
 		cfg.ProbeModel = "gpt-4o-mini"
 	}
 	return &Channel{
-		BaseChannel: core.NewBaseChannel(name, baseURL, weight, pool, timeout),
+		BaseChannel: core.NewBaseChannel(name, "subrouter", baseURL, weight, pool, timeout),
 		cfg:         cfg,
 	}
 }

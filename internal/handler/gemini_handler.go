@@ -130,7 +130,11 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 		return
 	}
 
-	channels, err := h.router.RouteWithFallback(ctx)
+	// Exclude gpt-image channels from Gemini routes
+	filter := &core.ChannelTypeFilter{
+		Exclude: []string{"gpt-image"},
+	}
+	channels, err := h.router.RouteWithTypeFilter(ctx, filter)
 	if err != nil {
 		log.Error("router error", "err", err)
 		h.writeSSEError(w, model.GoogleError{
@@ -339,7 +343,11 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 	}
 
 	// Get ordered fallback list — honours JWT channel restriction if present.
-	channels, err := h.router.RouteWithFallback(ctx)
+	// Exclude gpt-image channels from Gemini routes.
+	filter := &core.ChannelTypeFilter{
+		Exclude: []string{"gpt-image"},
+	}
+	channels, err := h.router.RouteWithTypeFilter(ctx, filter)
 	if err != nil {
 		log.Error("router error", "err", err)
 		writeGoogleError(w, model.GoogleError{

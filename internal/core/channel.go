@@ -39,6 +39,46 @@ type StreamGenerator interface {
 	Stream(ctx context.Context, req *model.GoogleRequest, modelName string, w ResponseWriter) error
 }
 
+// OpenAIRawResponse carries an upstream response verbatim so callers can
+// propagate status, headers, and body to the client without losing fidelity
+// (rate-limit headers, non-JSON content types, real HTTP status codes).
+type OpenAIRawResponse struct {
+	Status  int
+	Headers http.Header
+	Body    []byte
+}
+
+// OpenAIRawGenerator is an optional interface for channels that perform
+// zero-conversion pass-through to OpenAI-compatible upstreams. Unlike
+// RawBodyGenerator (which uses modelName), this interface uses endpoint
+// paths (e.g., "/v1/chat/completions", "/v1/images/generations") and
+// accepts a contentType so multipart/form-data bodies (used by
+// /v1/images/edits) forward with their original boundary intact.
+//
+// The returned *OpenAIRawResponse always carries the upstream status/headers/body
+// when err == nil, regardless of status code. The handler (not the channel)
+// decides whether non-2xx statuses warrant channel fallback.
+// A non-nil err signals a transport-level failure (connection, timeout, etc.);
+// the result is nil in that case.
+type OpenAIRawGenerator interface {
+	GenerateOpenAIRaw(ctx context.Context, contentType string, rawBody []byte, endpoint string) (*OpenAIRawResponse, error)
+}
+
+// OpenAIRawStreamGenerator is an optional interface for channels that can stream
+// OpenAI-native SSE responses verbatim to the client. The implementation must
+// write SSE events directly to w and flush as data arrives.
+//
+// Contract:
+//   - If the upstream request fails before bytes are written to w (transport
+//     error, or any non-2xx upstream status), return a non-nil error. The
+//     handler may fall back to another channel.
+//   - Once the upstream returns 2xx and the channel starts writing headers/body
+//     to w, mid-stream failures MUST be swallowed (return nil). Headers are
+//     already committed; any fallback would corrupt the client's response.
+type OpenAIRawStreamGenerator interface {
+	StreamOpenAIRaw(ctx context.Context, contentType string, rawBody []byte, endpoint string, w ResponseWriter) error
+}
+
 // ResponseWriter is the subset of http.ResponseWriter used by streaming
 // channel implementations so they can be tested without a real HTTP server.
 type ResponseWriter interface {
@@ -51,6 +91,10 @@ type ResponseWriter interface {
 // Channel is the interface each AI provider plugin must implement.
 type Channel interface {
     Name() string
+
+    // Type returns the channel type (e.g., "gemini", "kieai", "subrouter", "gpt-image").
+    // Used for route-based channel filtering.
+    Type() string
 
     // Weight returns the configured weight for weighted random routing.
     Weight() int

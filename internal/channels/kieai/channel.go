@@ -67,7 +67,7 @@ func NewChannel(baseURL string, weight int, pool *AccountPool, cfg Config, store
 	uploader := NewUploader(baseURL, cfg.Timeout, cfg.RetryAttempts)
 
 	ch := &Channel{
-		BaseChannel:   core.NewBaseChannel("kieai", baseURL, weight, pool, cfg.Timeout),
+		BaseChannel:   core.NewBaseChannel("kieai", "kieai", baseURL, weight, pool, cfg.Timeout),
 		cfg:           cfg,
 		reqTransform:  NewRequestTransformer(modelMapping, uploader),
 		respTransform: NewResponseTransformer(store),

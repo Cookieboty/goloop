@@ -26,6 +26,15 @@ export function ChannelCard({ name, stats }: ChannelCardProps) {
   const successRate =
     total > 0 ? ((stats.total_success / total) * 100).toFixed(1) : "—";
 
+  const typeColors: Record<string, string> = {
+    "gemini": "var(--blue)",
+    "kieai": "var(--purple)",
+    "subrouter": "var(--orange)",
+    "gpt-image": "var(--cyan)",
+  };
+
+  const typeColor = typeColors[stats.type] || "var(--text3)";
+
   return (
     <div
       style={{
@@ -36,9 +45,26 @@ export function ChannelCard({ name, stats }: ChannelCardProps) {
       }}
     >
       <div
-        style={{ fontSize: 14, fontWeight: "bold", marginBottom: 10 }}
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 10,
+        }}
       >
-        {name}
+        <div style={{ fontSize: 14, fontWeight: "bold" }}>{name}</div>
+        <span
+          style={{
+            fontSize: 10,
+            padding: "2px 6px",
+            borderRadius: 4,
+            background: `color-mix(in srgb, ${typeColor} 15%, transparent)`,
+            color: typeColor,
+            border: `1px solid ${typeColor}`,
+          }}
+        >
+          {stats.type}
+        </span>
       </div>
 
       <div

@@ -14,6 +14,7 @@ import (
 
 	"goloop/internal/admin"
 	"goloop/internal/channels/gemini"
+	"goloop/internal/channels/gptimage"
 	"goloop/internal/channels/kieai"
 	"goloop/internal/channels/subrouter"
 	"goloop/internal/config"
@@ -115,6 +116,18 @@ func main() {
 			gemCh := gemini.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, timeout)
 			registry.Register(gemCh)
 			slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
+		case "gpt-image":
+			pool := core.NewDefaultAccountPool()
+			for _, acc := range chCfg.Accounts {
+				pool.AddAccount(acc.APIKey, acc.Weight)
+			}
+			timeout := chCfg.Timeout
+			if timeout == 0 {
+				timeout = 60 * time.Second
+			}
+			gptImageCh := gptimage.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, timeout)
+			registry.Register(gptImageCh)
+			slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
 		default:
 			slog.Warn("unknown channel type, skipping", "name", name, "type", chCfg.Type)
 		}
@@ -149,10 +162,12 @@ func main() {
 
 	// HTTP handlers
 	geminiHandler := handler.NewGeminiHandler(router, registry, issuer, store, taskManager, reqTransformer, respTransformer, cfg.Server.MaxRequestBodyBytes)
+	openaiHandler := handler.NewOpenAIHandler(router, registry, issuer, cfg.Server.MaxRequestBodyBytes)
 	adminHandler := handler.NewAdminHandler(issuer, registry, health, cfg.AdminPassword)
 
 	mux := http.NewServeMux()
 	geminiHandler.RegisterRoutes(mux)
+	openaiHandler.RegisterRoutes(mux)
 	adminHandler.RegisterRoutes(mux)
 
 	// Apply rate limiting if configured

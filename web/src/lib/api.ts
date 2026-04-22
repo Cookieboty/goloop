@@ -121,6 +121,13 @@ export const api = {
     });
   },
 
+  resetChannelHealth(channel: string): Promise<void> {
+    return request<void>("/admin/channel-health", {
+      method: "POST",
+      body: JSON.stringify({ channel }),
+    });
+  },
+
   /** Verify the current admin key by calling a protected endpoint. */
   async verifyAuth(): Promise<boolean> {
     try {

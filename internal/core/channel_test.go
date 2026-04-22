@@ -29,11 +29,19 @@ func TestChannelInterface_SatisfiedByMock(t *testing.T) {
 }
 
 type mockChannel struct {
-	name   string
-	weight int
+	name        string
+	weight      int
+	ctype       string
+	unavailable bool
 }
 
 func (m *mockChannel) Name() string { return m.name }
+func (m *mockChannel) Type() string {
+	if m.ctype == "" {
+		return "mock"
+	}
+	return m.ctype
+}
 func (m *mockChannel) Weight() int {
 	if m.weight == 0 {
 		return 100
@@ -41,7 +49,7 @@ func (m *mockChannel) Weight() int {
 	return m.weight
 }
 func (m *mockChannel) HealthScore() float64 { return 1.0 }
-func (m *mockChannel) IsAvailable() bool    { return true }
+func (m *mockChannel) IsAvailable() bool    { return !m.unavailable }
 
 func (m *mockChannel) Generate(ctx context.Context, req *gomodel.GoogleRequest, model string) (*gomodel.GoogleResponse, error) {
     return &gomodel.GoogleResponse{

@@ -1,4 +1,5 @@
 export interface ChannelStats {
+  type: string;
   weight: number;
   is_healthy: boolean;
   health_score: number;

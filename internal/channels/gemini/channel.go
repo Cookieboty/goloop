@@ -35,7 +35,7 @@ var _ core.RawStreamGenerator = (*Channel)(nil)
 // name is the unique channel identifier (e.g. "gemini-direct").
 func NewChannel(name, baseURL string, weight int, pool *core.DefaultAccountPool, timeout time.Duration) *Channel {
 	return &Channel{
-		BaseChannel: core.NewBaseChannel(name, baseURL, weight, pool, timeout),
+		BaseChannel: core.NewBaseChannel(name, "gemini", baseURL, weight, pool, timeout),
 	}
 }
 

@@ -36,6 +36,7 @@ func (h *AdminHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/channel/", h.requireAuth(h.handleChannelAccounts))
 	mux.HandleFunc("POST /admin/channel/", h.requireAuth(h.handleChannelOp))
 	mux.HandleFunc("POST /admin/channel-weight", h.requireAuth(h.handleChannelWeight))
+	mux.HandleFunc("POST /admin/channel-health", h.requireAuth(h.handleResetChannelHealth))
 }
 
 // requireAuth wraps a handler with admin password authentication.
@@ -132,6 +133,7 @@ func (h *AdminHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 	for _, ch := range h.registry.List() {
 		fail, success := h.health.TotalStats(ch.Name())
 		stats[ch.Name()] = map[string]any{
+			"type":           ch.Type(),
 			"weight":         ch.Weight(),
 			"health_score":   h.health.HealthScore(ch.Name()),
 			"is_healthy":     h.health.IsHealthy(ch.Name()),
@@ -278,6 +280,36 @@ func (h *AdminHandler) handleChannelWeight(w http.ResponseWriter, r *http.Reques
 	setter.SetChannelWeight(req.Weight)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "channel": req.Channel, "weight": req.Weight})
+}
+
+func (h *AdminHandler) handleResetChannelHealth(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Channel string `json:"channel"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Channel == "" {
+		writeJSONError(w, http.StatusBadRequest, "channel is required")
+		return
+	}
+
+	_, found := h.registry.Get(req.Channel)
+	if !found {
+		writeJSONError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+
+	h.health.ResetHealthTo(req.Channel, 1.0)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":  "ok",
+		"channel": req.Channel,
+		"message": "Channel health reset to 100%",
+	})
 }
 
 func writeJSONError(w http.ResponseWriter, code int, message string) {
