@@ -1,8 +1,55 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: goloop-postgres
+    environment:
+      POSTGRES_DB: goloop
+      POSTGRES_USER: goloop
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-goloop123}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - goloop-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U goloop -d goloop"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    container_name: goloop-redis
+    command: redis-server --appendonly yes --appendfsync everysec
+    ports:
+      - "6379:6379"
+    volumes:
+      - goloop-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   goloop:
     build: .
     image: ghcr.io/cookieboty/goloop:latest
     pull_policy: always
+    container_name: goloop-app
     ports:
       - "8080:8080"
     volumes:
@@ -11,13 +58,20 @@ services:
       - .env
     environment:
       TZ: Asia/Shanghai
+      DATABASE_URL: postgresql://goloop:${POSTGRES_PASSWORD:-goloop123}@postgres:5432/goloop?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 30s
     logging:
       driver: "json-file"
       options:
@@ -25,5 +79,9 @@ services:
         max-file: "3"
 
 volumes:
+  goloop-postgres-data:
+    driver: local
+  goloop-redis-data:
+    driver: local
   goloop-images:
     driver: local
