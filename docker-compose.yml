@@ -46,9 +46,7 @@ services:
         max-file: "3"
 
   goloop:
-    build: .
     image: ghcr.io/cookieboty/goloop:latest
-    pull_policy: always
     container_name: goloop-app
     ports:
       - "8080:8080"
