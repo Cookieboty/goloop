@@ -47,6 +47,7 @@ services:
 
   goloop:
     image: ghcr.io/cookieboty/goloop:latest
+    pull_policy: always
     container_name: goloop-app
     ports:
       - "8080:8080"

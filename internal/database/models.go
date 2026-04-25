@@ -79,6 +79,7 @@ type UsageLog struct {
 	ErrorMessage *string   `gorm:"type:text" json:"error_message,omitempty"`
 	LatencyMs   *int       `json:"latency_ms,omitempty"`
 	RequestIP   *string    `json:"request_ip,omitempty"`
+	ShouldCount bool       `gorm:"default:false;index:idx_should_count" json:"should_count"` // 是否计入全局统计（最终成功/失败）
 	CreatedAt   time.Time  `gorm:"index:idx_created;index:idx_apikey_created" json:"created_at"`
 	
 	APIKey APIKey `gorm:"foreignKey:APIKeyID" json:"-"`

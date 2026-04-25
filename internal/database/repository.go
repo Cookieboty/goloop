@@ -278,6 +278,7 @@ func (r *Repository) BatchInsertUsageLogs(entries []LogEntry) error {
 			ErrorMessage: entry.ErrorMessage,
 			LatencyMs:    entry.LatencyMs,
 			RequestIP:    entry.RequestIP,
+			ShouldCount:  entry.UpdateStats,
 			CreatedAt:    time.Now(),
 		}
 	}
@@ -389,7 +390,9 @@ func (r *Repository) GetAPIKeyStatsByChannel(apiKeyID uint, startDate, endDate *
 		AvgLatencyMs  float64
 	}
 	
-	query := r.db.Model(&UsageLog{}).Where("api_key_id = ?", apiKeyID)
+	query := r.db.Model(&UsageLog{}).
+		Where("api_key_id = ?", apiKeyID).
+		Where("should_count = ?", true)
 	if startDate != nil {
 		query = query.Where("created_at >= ?", *startDate)
 	}
@@ -494,7 +497,7 @@ func (r *Repository) GetGlobalStats() (*ChannelTypeStats, []ChannelDetailStats, 
 		return nil, nil, fmt.Errorf("failed to query channel stats: %w", err)
 	}
 	
-	// 2. 查询今日统计
+	// 2. 查询今日统计（只统计最终结果）
 	today := time.Now().Truncate(24 * time.Hour)
 	var todayResult struct {
 		TotalRequests int64
@@ -505,6 +508,7 @@ func (r *Repository) GetGlobalStats() (*ChannelTypeStats, []ChannelDetailStats, 
 	
 	err = r.db.Model(&UsageLog{}).
 		Where("created_at >= ?", today).
+		Where("should_count = ?", true).
 		Select(
 			"COUNT(*) as total_requests",
 			"SUM(CASE WHEN success THEN 1 ELSE 0 END) as total_success",
@@ -517,13 +521,10 @@ func (r *Repository) GetGlobalStats() (*ChannelTypeStats, []ChannelDetailStats, 
 		return nil, nil, fmt.Errorf("failed to query today stats: %w", err)
 	}
 	
-	// 3. 汇总 Gemini 和 OpenAI 统计
-	var geminiStats, openaiStats OverviewStats
+	// 3. 构建渠道详情列表（统计所有尝试，显示渠道真实表现）
 	channelDetails := make([]ChannelDetailStats, 0)
 	
 	for _, cr := range channelResults {
-		// channelType 已经从 JOIN 查询中获取，无需再查找
-		
 		// 计算成功率
 		successRate := 0.0
 		if cr.TotalRequests > 0 {
@@ -540,35 +541,47 @@ func (r *Repository) GetGlobalStats() (*ChannelTypeStats, []ChannelDetailStats, 
 			SuccessRate:   successRate,
 			AvgLatencyMs:  cr.AvgLatencyMs,
 		})
-		
-		// 按类型汇总（检查渠道类型是否包含 "gemini" 或 "openai"）
-		isGemini := false
-		isOpenAI := false
-		
-		// 简单的类型判断逻辑
-		switch cr.ChannelType {
-		case "gemini_callback", "gemini_openai", "gemini_original":
-			isGemini = true
-		case "openai_original", "openai_callback":
-			isOpenAI = true
-		}
-		
-		if isGemini {
-			geminiStats.TotalRequests += cr.TotalRequests
-			geminiStats.TotalSuccess += cr.TotalSuccess
-			geminiStats.TotalFail += cr.TotalFail
-			// 延迟需要加权平均，这里简化为累加（后面会重新计算）
-		} else if isOpenAI {
-			openaiStats.TotalRequests += cr.TotalRequests
-			openaiStats.TotalSuccess += cr.TotalSuccess
-			openaiStats.TotalFail += cr.TotalFail
-		}
 	}
 	
-	// 4. 重新计算 Gemini 和 OpenAI 的平均延迟
-	geminiStats.AvgLatencyMs = r.calculateAvgLatency("gemini")
-	openaiStats.AvgLatencyMs = r.calculateAvgLatency("openai")
+	// 4. 查询 Gemini 类型汇总（只统计最终结果）
+	var geminiStats OverviewStats
+	err = r.db.Model(&UsageLog{}).
+		Joins("INNER JOIN channels ON usage_logs.channel_name = channels.name").
+		Where("channels.enabled = ?", true).
+		Where("usage_logs.should_count = ?", true).
+		Where("channels.type IN ?", []string{"gemini_callback", "gemini_openai", "gemini_original"}).
+		Select(
+			"COUNT(*) as total_requests",
+			"SUM(CASE WHEN success THEN 1 ELSE 0 END) as total_success",
+			"SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) as total_fail",
+			"COALESCE(AVG(usage_logs.latency_ms), 0) as avg_latency_ms",
+		).
+		Scan(&geminiStats).Error
 	
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to query gemini stats: %w", err)
+	}
+	
+	// 5. 查询 OpenAI 类型汇总（只统计最终结果）
+	var openaiStats OverviewStats
+	err = r.db.Model(&UsageLog{}).
+		Joins("INNER JOIN channels ON usage_logs.channel_name = channels.name").
+		Where("channels.enabled = ?", true).
+		Where("usage_logs.should_count = ?", true).
+		Where("channels.type IN ?", []string{"openai_original", "openai_callback"}).
+		Select(
+			"COUNT(*) as total_requests",
+			"SUM(CASE WHEN success THEN 1 ELSE 0 END) as total_success",
+			"SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) as total_fail",
+			"COALESCE(AVG(usage_logs.latency_ms), 0) as avg_latency_ms",
+		).
+		Scan(&openaiStats).Error
+	
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to query openai stats: %w", err)
+	}
+	
+	// 6. 组装返回结果
 	typeStats := &ChannelTypeStats{
 		Gemini: geminiStats,
 		OpenAI: openaiStats,
