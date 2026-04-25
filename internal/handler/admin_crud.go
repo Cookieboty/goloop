@@ -13,25 +13,32 @@ import (
 	"goloop/internal/database"
 )
 
+// ChannelBootstrapper interface for hot reloading channels
+type ChannelBootstrapper interface {
+	ReloadAndRegister() error
+}
+
 // AdminCRUDHandler handles database-driven CRUD operations
 type AdminCRUDHandler struct {
-	repo        *database.Repository
-	cache       *cache.APIKeyCache
-	configMgr   *core.ConfigManager
-	registry    *core.PluginRegistry
-	health      *core.HealthTracker
-	requireAuth func(http.HandlerFunc) http.HandlerFunc
+	repo         *database.Repository
+	cache        *cache.APIKeyCache
+	configMgr    *core.ConfigManager
+	registry     *core.PluginRegistry
+	health       *core.HealthTracker
+	bootstrapper ChannelBootstrapper
+	requireAuth  func(http.HandlerFunc) http.HandlerFunc
 }
 
 // NewAdminCRUDHandler creates a new CRUD handler
-func NewAdminCRUDHandler(repo *database.Repository, cache *cache.APIKeyCache, configMgr *core.ConfigManager, registry *core.PluginRegistry, health *core.HealthTracker, requireAuth func(http.HandlerFunc) http.HandlerFunc) *AdminCRUDHandler {
+func NewAdminCRUDHandler(repo *database.Repository, cache *cache.APIKeyCache, configMgr *core.ConfigManager, registry *core.PluginRegistry, health *core.HealthTracker, bootstrapper ChannelBootstrapper, requireAuth func(http.HandlerFunc) http.HandlerFunc) *AdminCRUDHandler {
 	return &AdminCRUDHandler{
-		repo:        repo,
-		cache:       cache,
-		configMgr:   configMgr,
-		registry:    registry,
-		health:      health,
-		requireAuth: requireAuth,
+		repo:         repo,
+		cache:        cache,
+		configMgr:    configMgr,
+		registry:     registry,
+		health:       health,
+		bootstrapper: bootstrapper,
+		requireAuth:  requireAuth,
 	}
 }
 
@@ -181,8 +188,8 @@ func (h *AdminCRUDHandler) handleCreateChannel(w http.ResponseWriter, r *http.Re
 		return
 	}
 	
-	// Reload config (only updates config cache, does not register new channels)
-	if err := h.configMgr.Reload(); err != nil {
+	// Reload config and re-register channels
+	if err := h.bootstrapper.ReloadAndRegister(); err != nil {
 		slog.Warn("failed to reload config after channel creation", "err", err)
 	}
 	
@@ -215,7 +222,7 @@ func (h *AdminCRUDHandler) handleUpdateChannel(w http.ResponseWriter, r *http.Re
 		return
 	}
 	
-	// Update fields
+	// Update channel fields
 	channel.Name = req.Name
 	channel.Type = req.Type
 	channel.BaseURL = req.BaseURL
@@ -227,22 +234,38 @@ func (h *AdminCRUDHandler) handleUpdateChannel(w http.ResponseWriter, r *http.Re
 	channel.RetryAttempts = req.RetryAttempts
 	channel.ProbeModel = req.ProbeModel
 	
-	if err := h.repo.UpdateChannel(channel); err != nil {
+	// Prepare accounts and mappings
+	accounts := make([]database.Account, len(req.Accounts))
+	for i, acc := range req.Accounts {
+		accounts[i] = database.Account{
+			APIKey:  acc.APIKey,
+			Weight:  acc.Weight,
+			Enabled: true,
+		}
+	}
+	
+	mappings := make([]database.ModelMapping, len(req.ModelMappings))
+	for i, m := range req.ModelMappings {
+		mappings[i] = database.ModelMapping{
+			SourceModel: m.SourceModel,
+			TargetModel: m.TargetModel,
+		}
+	}
+	
+	// Update channel with accounts and mappings in a transaction
+	if err := h.repo.UpdateChannelWithAccounts(channel, accounts, mappings); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "failed to update channel: "+err.Error())
 		return
 	}
 	
-	// Reload config (only updates config cache, does not re-register channels)
-	if err := h.configMgr.Reload(); err != nil {
+	// Reload config and re-register channels
+	if err := h.bootstrapper.ReloadAndRegister(); err != nil {
 		slog.Warn("failed to reload config after channel update", "err", err)
 	}
 	
-	// Note: Channel configuration updates require service restart to take effect
-	// TODO: Implement hot reload mechanism to update channel configs without restart
 	writeJSON(w, map[string]interface{}{
 		"channel": channel,
-		"message": "渠道已更新成功。注意：配置变更需要重启服务才能生效。",
-		"requires_restart": true,
+		"message": "渠道更新成功，配置已自动重载",
 	})
 }
 
@@ -258,8 +281,8 @@ func (h *AdminCRUDHandler) handleDeleteChannel(w http.ResponseWriter, r *http.Re
 		return
 	}
 	
-	// Reload config
-	if err := h.configMgr.Reload(); err != nil {
+	// Reload config and re-register channels
+	if err := h.bootstrapper.ReloadAndRegister(); err != nil {
 		slog.Warn("failed to reload config after channel deletion", "err", err)
 	}
 	
@@ -286,8 +309,8 @@ func (h *AdminCRUDHandler) handleToggleChannel(w http.ResponseWriter, r *http.Re
 		return
 	}
 	
-	// Reload config
-	if err := h.configMgr.Reload(); err != nil {
+	// Reload config and re-register channels
+	if err := h.bootstrapper.ReloadAndRegister(); err != nil {
 		slog.Warn("failed to reload config after channel toggle", "err", err)
 	}
 	
@@ -339,8 +362,8 @@ func (h *AdminCRUDHandler) handleCreateAccount(w http.ResponseWriter, r *http.Re
 		return
 	}
 	
-	// Reload config
-	if err := h.configMgr.Reload(); err != nil {
+	// Reload config and re-register channels
+	if err := h.bootstrapper.ReloadAndRegister(); err != nil {
 		slog.Warn("failed to reload config after account creation", "err", err)
 	}
 	
@@ -376,8 +399,8 @@ func (h *AdminCRUDHandler) handleUpdateAccount(w http.ResponseWriter, r *http.Re
 		return
 	}
 	
-	// Reload config
-	if err := h.configMgr.Reload(); err != nil {
+	// Reload config and re-register channels
+	if err := h.bootstrapper.ReloadAndRegister(); err != nil {
 		slog.Warn("failed to reload config after account update", "err", err)
 	}
 	
@@ -396,8 +419,8 @@ func (h *AdminCRUDHandler) handleDeleteAccount(w http.ResponseWriter, r *http.Re
 		return
 	}
 	
-	// Reload config
-	if err := h.configMgr.Reload(); err != nil {
+	// Reload config and re-register channels
+	if err := h.bootstrapper.ReloadAndRegister(); err != nil {
 		slog.Warn("failed to reload config after account deletion", "err", err)
 	}
 	
@@ -424,8 +447,8 @@ func (h *AdminCRUDHandler) handleToggleAccount(w http.ResponseWriter, r *http.Re
 		return
 	}
 	
-	// Reload config
-	if err := h.configMgr.Reload(); err != nil {
+	// Reload config and re-register channels
+	if err := h.bootstrapper.ReloadAndRegister(); err != nil {
 		slog.Warn("failed to reload config after account toggle", "err", err)
 	}
 	
@@ -476,8 +499,8 @@ func (h *AdminCRUDHandler) handleCreateMapping(w http.ResponseWriter, r *http.Re
 		return
 	}
 	
-	// Reload config
-	if err := h.configMgr.Reload(); err != nil {
+	// Reload config and re-register channels
+	if err := h.bootstrapper.ReloadAndRegister(); err != nil {
 		slog.Warn("failed to reload config after mapping creation", "err", err)
 	}
 	
@@ -511,8 +534,8 @@ func (h *AdminCRUDHandler) handleUpdateMapping(w http.ResponseWriter, r *http.Re
 		return
 	}
 	
-	// Reload config
-	if err := h.configMgr.Reload(); err != nil {
+	// Reload config and re-register channels
+	if err := h.bootstrapper.ReloadAndRegister(); err != nil {
 		slog.Warn("failed to reload config after mapping update", "err", err)
 	}
 	
@@ -531,8 +554,8 @@ func (h *AdminCRUDHandler) handleDeleteMapping(w http.ResponseWriter, r *http.Re
 		return
 	}
 	
-	// Reload config
-	if err := h.configMgr.Reload(); err != nil {
+	// Reload config and re-register channels
+	if err := h.bootstrapper.ReloadAndRegister(); err != nil {
 		slog.Warn("failed to reload config after mapping deletion", "err", err)
 	}
 	
@@ -793,13 +816,14 @@ func (h *AdminCRUDHandler) handleGetErrorLogs(w http.ResponseWriter, r *http.Req
 // ==================== Config Reload ====================
 
 func (h *AdminCRUDHandler) handleReload(w http.ResponseWriter, r *http.Request) {
-	if err := h.configMgr.Reload(); err != nil {
+	if err := h.bootstrapper.ReloadAndRegister(); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "failed to reload config: "+err.Error())
 		return
 	}
 	
-	writeJSON(w, map[string]string{
-		"message": "config reloaded successfully",
+	writeJSON(w, map[string]any{
+		"message":  "config reloaded and channels re-registered successfully",
+		"channels": len(h.registry.List()),
 	})
 }
 

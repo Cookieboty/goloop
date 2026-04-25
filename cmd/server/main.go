@@ -14,11 +14,6 @@ import (
 
 	"goloop/internal/admin"
 	"goloop/internal/cache"
-	"goloop/internal/channels/gemini_callback"
-	"goloop/internal/channels/gemini_openai"
-	"goloop/internal/channels/gemini_original"
-	"goloop/internal/channels/openai_callback"
-	"goloop/internal/channels/openai_original"
 	"goloop/internal/config"
 	"goloop/internal/core"
 	"goloop/internal/database"
@@ -111,120 +106,24 @@ func main() {
 	go store.StartCleanupWorker(cleanupCtx, 1*time.Hour, 24*time.Hour)
 
 	// Bootstrap all configured channels from database
+	bootstrapper := NewChannelBootstrapper(registry, configMgr, store)
+	if err := bootstrapper.Bootstrap(); err != nil {
+		slog.Error("failed to bootstrap channels", "err", err)
+		os.Exit(1)
+	}
+	
+	// Find first callback channel for task manager
 	var firstCallbackBaseURL string
 	var firstCallbackTimeout time.Duration
-	
-	for name, chCfg := range configMgr.GetAllChannels() {
-		switch chCfg.Type {
-		case "gemini_callback":
-			pool := gemini_callback.NewAccountPool()
-			for _, acc := range chCfg.Accounts {
-				pool.AddAccount(acc.APIKey, acc.Weight)
+	for _, chCfg := range configMgr.GetAllChannels() {
+		if chCfg.Type == "gemini_callback" || chCfg.Type == "openai_callback" {
+			firstCallbackBaseURL = chCfg.BaseURL
+			firstCallbackTimeout = chCfg.Timeout
+			if firstCallbackTimeout == 0 {
+				firstCallbackTimeout = 120 * time.Second
 			}
-			timeout := chCfg.Timeout
-			if timeout == 0 {
-				timeout = 120 * time.Second
-			}
-			
-			slog.Info("creating gemini_callback channel with config",
-				"name", name,
-				"timeout", timeout,
-				"initialInterval", chCfg.InitialInterval,
-				"maxInterval", chCfg.MaxInterval,
-				"maxWaitTime", chCfg.MaxWaitTime,
-				"retryAttempts", chCfg.RetryAttempts,
-			)
-			
-			kieCh := gemini_callback.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, gemini_callback.Config{
-				BaseURL:         chCfg.BaseURL,
-				Timeout:         timeout,
-				InitialInterval: chCfg.InitialInterval,
-				MaxInterval:     chCfg.MaxInterval,
-				MaxWaitTime:     chCfg.MaxWaitTime,
-				RetryAttempts:   chCfg.RetryAttempts,
-			}, store)
-			registry.Register(kieCh)
-			slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
-
-			// Capture the first callback channel's connection info for the task manager.
-			if firstCallbackBaseURL == "" {
-				firstCallbackBaseURL = chCfg.BaseURL
-				firstCallbackTimeout = timeout
-			}
-		case "gemini_openai":
-			pool := core.NewDefaultAccountPool()
-			for _, acc := range chCfg.Accounts {
-				pool.AddAccount(acc.APIKey, acc.Weight)
-			}
-			timeout := chCfg.Timeout
-			if timeout == 0 {
-				timeout = 60 * time.Second
-			}
-			probeModel := chCfg.ProbeModel
-			if probeModel == "" {
-				probeModel = "gpt-4o-mini"
-			}
-			subCh := gemini_openai.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, timeout, gemini_openai.Config{
-				ProbeModel: probeModel,
-			})
-			registry.Register(subCh)
-			slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
-		case "gemini_original":
-			pool := core.NewDefaultAccountPool()
-			for _, acc := range chCfg.Accounts {
-				pool.AddAccount(acc.APIKey, acc.Weight)
-			}
-			timeout := chCfg.Timeout
-			if timeout == 0 {
-				timeout = 120 * time.Second
-			}
-			gemCh := gemini_original.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, timeout)
-			registry.Register(gemCh)
-			slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
-		case "openai_original":
-			pool := core.NewDefaultAccountPool()
-			for _, acc := range chCfg.Accounts {
-				pool.AddAccount(acc.APIKey, acc.Weight)
-			}
-			timeout := chCfg.Timeout
-			if timeout == 0 {
-				timeout = 60 * time.Second
-			}
-			gptImageCh := openai_original.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, timeout)
-			registry.Register(gptImageCh)
-			slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
-		case "openai_callback":
-			pool := openai_callback.NewAccountPool()
-			for _, acc := range chCfg.Accounts {
-				pool.AddAccount(acc.APIKey, acc.Weight)
-			}
-			timeout := chCfg.Timeout
-			if timeout == 0 {
-				timeout = 120 * time.Second
-			}
-			openaiCh := openai_callback.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, openai_callback.Config{
-				BaseURL:         chCfg.BaseURL,
-				Timeout:         timeout,
-				InitialInterval: chCfg.InitialInterval,
-				MaxInterval:     chCfg.MaxInterval,
-				MaxWaitTime:     chCfg.MaxWaitTime,
-				RetryAttempts:   chCfg.RetryAttempts,
-			})
-			registry.Register(openaiCh)
-			slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
-			
-			// Can also be used for task manager
-			if firstCallbackBaseURL == "" {
-				firstCallbackBaseURL = chCfg.BaseURL
-				firstCallbackTimeout = timeout
-			}
-		default:
-			slog.Warn("unknown channel type, skipping", "name", name, "type", chCfg.Type)
+			break
 		}
-	}
-
-	if len(registry.List()) == 0 {
-		slog.Warn("no channels registered, running in degraded mode")
 	}
 
 	// Task manager for streaming (uses the first callback channel's connection).
@@ -277,7 +176,7 @@ func main() {
 	// HTTP handlers
 	geminiHandler := handler.NewGeminiHandler(router, registry, issuer, store, taskManager, reqTransformer, respTransformer, cfg.Server.MaxRequestBodyBytes, usageLogger)
 	openaiHandler := handler.NewOpenAIHandler(router, registry, issuer, configMgr, cfg.Server.MaxRequestBodyBytes, usageLogger)
-	adminHandler := handler.NewAdminHandler(issuer, registry, health, cfg.AdminPassword, repo, redisClient, configMgr)
+	adminHandler := handler.NewAdminHandler(issuer, registry, health, cfg.AdminPassword, repo, redisClient, configMgr, bootstrapper)
 
 	// Business API routes (Gemini, OpenAI) - require API Key authentication
 	businessMux := http.NewServeMux()

@@ -82,6 +82,48 @@ func (r *Repository) UpdateChannel(channel *Channel) error {
 	return r.db.Save(channel).Error
 }
 
+// UpdateChannelWithAccounts 事务：更新渠道+重建账号+重建模型映射
+func (r *Repository) UpdateChannelWithAccounts(channel *Channel, accounts []Account, mappings []ModelMapping) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		// 1. 更新渠道基本信息
+		if err := tx.Save(channel).Error; err != nil {
+			return fmt.Errorf("failed to update channel: %w", err)
+		}
+		
+		// 2. 删除旧账号
+		if err := tx.Where("channel_id = ?", channel.ID).Delete(&Account{}).Error; err != nil {
+			return fmt.Errorf("failed to delete old accounts: %w", err)
+		}
+		
+		// 3. 创建新账号
+		if len(accounts) > 0 {
+			for i := range accounts {
+				accounts[i].ChannelID = channel.ID
+			}
+			if err := tx.Create(&accounts).Error; err != nil {
+				return fmt.Errorf("failed to create accounts: %w", err)
+			}
+		}
+		
+		// 4. 删除旧模型映射
+		if err := tx.Where("channel_id = ?", channel.ID).Delete(&ModelMapping{}).Error; err != nil {
+			return fmt.Errorf("failed to delete old model mappings: %w", err)
+		}
+		
+		// 5. 创建新模型映射
+		if len(mappings) > 0 {
+			for i := range mappings {
+				mappings[i].ChannelID = channel.ID
+			}
+			if err := tx.Create(&mappings).Error; err != nil {
+				return fmt.Errorf("failed to create model mappings: %w", err)
+			}
+		}
+		
+		return nil
+	})
+}
+
 // DeleteChannel 删除渠道（级联删除账号和映射）
 func (r *Repository) DeleteChannel(id uint) error {
 	return r.db.Delete(&Channel{}, id).Error

@@ -23,7 +23,7 @@ type AdminHandler struct {
 	crudHandler   *AdminCRUDHandler
 }
 
-func NewAdminHandler(issuer *core.JWTIssuer, registry *core.PluginRegistry, health *core.HealthTracker, adminPassword string, repo *database.Repository, cache *cache.APIKeyCache, configMgr *core.ConfigManager) *AdminHandler {
+func NewAdminHandler(issuer *core.JWTIssuer, registry *core.PluginRegistry, health *core.HealthTracker, adminPassword string, repo *database.Repository, cache *cache.APIKeyCache, configMgr *core.ConfigManager, bootstrapper ChannelBootstrapper) *AdminHandler {
 	h := &AdminHandler{
 		issuer:        issuer,
 		registry:      registry,
@@ -32,7 +32,7 @@ func NewAdminHandler(issuer *core.JWTIssuer, registry *core.PluginRegistry, heal
 	}
 	
 	// Create CRUD handler with requireAuth wrapper
-	h.crudHandler = NewAdminCRUDHandler(repo, cache, configMgr, registry, health, h.requireAuth)
+	h.crudHandler = NewAdminCRUDHandler(repo, cache, configMgr, registry, health, bootstrapper, h.requireAuth)
 	
 	return h
 }

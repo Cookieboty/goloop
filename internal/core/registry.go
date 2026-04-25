@@ -42,3 +42,11 @@ func (r *PluginRegistry) List() []Channel {
 	}
 	return chans
 }
+
+// Clear removes all registered channels.
+// Used during hot reload to clean up before re-registering.
+func (r *PluginRegistry) Clear() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.chans = make(map[string]Channel)
+}
