@@ -25,3 +25,7 @@ internal/admin/out/
 
 # ---- 文档与计划 ----
 docs/
+
+.cursor
+
+.claude

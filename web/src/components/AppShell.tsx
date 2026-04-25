@@ -12,15 +12,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
+    <div className="flex h-screen overflow-hidden bg-gray-950">
       <Sidebar />
-      <main
-        style={{
-          flex: 1,
-          padding: 30,
-          overflowY: "auto",
-        }}
-      >
+      <main className="flex-1 overflow-y-auto bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
         {children}
       </main>
     </div>

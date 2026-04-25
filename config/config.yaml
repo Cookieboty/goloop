@@ -1,7 +1,7 @@
 server:
   port: 8080
-  read_timeout: 130s
-  write_timeout: 130s
+  read_timeout: 1300s
+  write_timeout: 1300s
 
 jwt:
   secret: "${JWT_SECRET}"
@@ -21,10 +21,10 @@ channels:
   kieai:
     type: kieai
     base_url: https://api.kie.ai
-    timeout: 120s
+    timeout: 1300s
     initial_interval: 2s
     max_interval: 10s
-    max_wait_time: 120s
+    max_wait_time: 1200s
     retry_attempts: 3
     accounts:
       - api_key: "${KIEAI_KEY_1}"

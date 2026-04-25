@@ -8,7 +8,9 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"goloop/internal/cache"
 	"goloop/internal/core"
+	"goloop/internal/database"
 	"goloop/internal/model"
 )
 
@@ -18,18 +20,25 @@ type AdminHandler struct {
 	registry      *core.PluginRegistry
 	health        *core.HealthTracker
 	adminPassword string
+	crudHandler   *AdminCRUDHandler
 }
 
-func NewAdminHandler(issuer *core.JWTIssuer, registry *core.PluginRegistry, health *core.HealthTracker, adminPassword string) *AdminHandler {
-	return &AdminHandler{
+func NewAdminHandler(issuer *core.JWTIssuer, registry *core.PluginRegistry, health *core.HealthTracker, adminPassword string, repo *database.Repository, cache *cache.APIKeyCache, configMgr *core.ConfigManager) *AdminHandler {
+	h := &AdminHandler{
 		issuer:        issuer,
 		registry:      registry,
 		health:        health,
 		adminPassword: adminPassword,
 	}
+	
+	// Create CRUD handler with requireAuth wrapper
+	h.crudHandler = NewAdminCRUDHandler(repo, cache, configMgr, registry, health, h.requireAuth)
+	
+	return h
 }
 
 func (h *AdminHandler) RegisterRoutes(mux *http.ServeMux) {
+	// Legacy endpoints (kept for backward compatibility)
 	mux.HandleFunc("POST /admin/issue-token", h.requireAuth(h.handleIssueToken))
 	mux.HandleFunc("POST /admin/quick-token", h.requireAuth(h.handleQuickToken))
 	mux.HandleFunc("GET /admin/stats", h.requireAuth(h.handleStats))
@@ -37,6 +46,11 @@ func (h *AdminHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/channel/", h.requireAuth(h.handleChannelOp))
 	mux.HandleFunc("POST /admin/channel-weight", h.requireAuth(h.handleChannelWeight))
 	mux.HandleFunc("POST /admin/channel-health", h.requireAuth(h.handleResetChannelHealth))
+	
+	// New CRUD endpoints
+	if h.crudHandler != nil {
+		h.crudHandler.RegisterRoutes(mux)
+	}
 }
 
 // requireAuth wraps a handler with admin password authentication.

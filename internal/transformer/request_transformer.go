@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"goloop/internal/config"
+	"goloop/internal/core"
 	"goloop/internal/model"
 	"goloop/internal/security"
 	"goloop/internal/storage"
@@ -21,41 +21,42 @@ const (
 // RequestTransformer converts Google API requests to KIE.AI requests.
 type RequestTransformer struct {
 	store         *storage.Store
-	modelMapping  map[string]config.ModelDefaults
+	configMgr     *core.ConfigManager
 	maxImageBytes int64
 }
 
-func NewRequestTransformer(store *storage.Store, modelMapping map[string]config.ModelDefaults, maxImageBytes int64) *RequestTransformer {
+func NewRequestTransformer(store *storage.Store, configMgr *core.ConfigManager, maxImageBytes int64) *RequestTransformer {
 	if maxImageBytes <= 0 {
 		maxImageBytes = 30 * 1024 * 1024 // 30MB default
 	}
 	return &RequestTransformer{
 		store:         store,
-		modelMapping:  modelMapping,
+		configMgr:     configMgr,
 		maxImageBytes: maxImageBytes,
 	}
 }
 
-func (t *RequestTransformer) ListModels() []map[string]any {
-	result := make([]map[string]any, 0, len(t.modelMapping))
-	for name, m := range t.modelMapping {
-		result = append(result, map[string]any{
-			"name":          name,
-			"kieai_model":   m.KieAIModel,
-			"aspect_ratio":  m.AspectRatio,
-			"resolution":    m.Resolution,
-			"output_format": m.OutputFormat,
-		})
-	}
-	return result
-}
-
 // Transform converts a Google GenerateContent request into a KIE.AI CreateTask request.
 // googleModel is the model name from the URL path (e.g. "gemini-3.1-flash-image-preview").
-func (t *RequestTransformer) Transform(ctx context.Context, req *model.GoogleRequest, googleModel string) (*model.KieAICreateTaskRequest, error) {
-	defaults, ok := t.modelMapping[googleModel]
-	if !ok {
-		return nil, fmt.Errorf("transformer: unknown model %q", googleModel)
+// channelName is used to look up channel-specific model mappings.
+func (t *RequestTransformer) Transform(ctx context.Context, req *model.GoogleRequest, googleModel, channelName string) (*model.KieAICreateTaskRequest, error) {
+	// Apply channel-specific model mapping if available
+	mappedModel := t.configMgr.GetModelMapping(channelName, googleModel)
+	
+	// Use default KIE.AI model settings (can be overridden by channel mapping)
+	kieAIModel := mappedModel
+	if kieAIModel == googleModel {
+		// No mapping found, use default for common models
+		switch googleModel {
+		case "gemini-3.1-flash-image-preview":
+			kieAIModel = "nano-banana-2"
+		case "gemini-3-pro-image-preview":
+			kieAIModel = "nano-banana-pro"
+		case "gemini-2.5-flash-image":
+			kieAIModel = "google/nano-banana"
+		default:
+			kieAIModel = googleModel // Pass through as-is
+		}
 	}
 
 	prompt, imageURLs, err := t.extractPartsContent(req)
@@ -71,12 +72,13 @@ func (t *RequestTransformer) Transform(ctx context.Context, req *model.GoogleReq
 		return nil, fmt.Errorf("transformer: too many images: %d > %d", len(imageURLs), maxImageCount)
 	}
 
+	// Default image generation settings
 	input := model.KieAIInput{
 		Prompt:       prompt,
 		ImageInput:   imageURLs,
-		AspectRatio:  defaults.AspectRatio,
-		Resolution:   defaults.Resolution,
-		OutputFormat: defaults.OutputFormat,
+		AspectRatio:  "1:1",
+		Resolution:   "1K",
+		OutputFormat: "png",
 	}
 
 	if req.GenerationConfig != nil && req.GenerationConfig.ImageConfig != nil {
@@ -93,7 +95,7 @@ func (t *RequestTransformer) Transform(ctx context.Context, req *model.GoogleReq
 	}
 
 	return &model.KieAICreateTaskRequest{
-		Model: defaults.KieAIModel,
+		Model: kieAIModel,
 		Input: input,
 	}, nil
 }

@@ -20,18 +20,28 @@ type Content struct {
 
 type Part struct {
 	Text       string      `json:"text,omitempty"`
-	InlineData *InlineData `json:"inlineData,omitempty"`
-	FileData   *FileData   `json:"fileData,omitempty"`
+	// InlineData supports both REST API (inline_data) and Vertex AI (inlineData) formats
+	InlineData     *InlineData `json:"inline_data,omitempty"`
+	InlineDataAlt  *InlineData `json:"inlineData,omitempty"` // Vertex AI format alias
+	// FileData supports both REST API (file_data) and Vertex AI (fileData) formats
+	FileData       *FileData   `json:"file_data,omitempty"`
+	FileDataAlt    *FileData   `json:"fileData,omitempty"`   // Vertex AI format alias
 }
 
 type InlineData struct {
-	MimeType string `json:"mimeType"`
-	Data     string `json:"data"` // base64 encoded
+	// MimeType supports both REST API (mime_type) and Vertex AI (mimeType) formats
+	MimeType    string `json:"mime_type,omitempty"`
+	MimeTypeAlt string `json:"mimeType,omitempty"` // Vertex AI format alias
+	Data        string `json:"data"` // base64 encoded
 }
 
 type FileData struct {
-	MimeType string `json:"mimeType"`
-	FileURI  string `json:"fileUri"`
+	// MimeType supports both REST API (mime_type) and Vertex AI (mimeType) formats
+	MimeType    string `json:"mime_type,omitempty"`
+	MimeTypeAlt string `json:"mimeType,omitempty"` // Vertex AI format alias
+	// FileURI supports both REST API (file_uri) and Vertex AI (fileUri) formats
+	FileURI     string `json:"file_uri,omitempty"`
+	FileURIAlt  string `json:"fileUri,omitempty"`  // Vertex AI format alias
 }
 
 // SafetySetting controls blocking of harmful content for a specific category.

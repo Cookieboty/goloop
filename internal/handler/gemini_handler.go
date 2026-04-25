@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"goloop/internal/core"
+	"goloop/internal/database"
 	"goloop/internal/kieai"
+	"goloop/internal/middleware"
 	"goloop/internal/model"
 	"goloop/internal/storage"
 	"goloop/internal/transformer"
@@ -29,6 +31,7 @@ type GeminiHandler struct {
 	reqTransformer      *transformer.RequestTransformer
 	respTransformer     *transformer.ResponseTransformer
 	maxRequestBodyBytes int64
+	usageLogger         *core.UsageLogger
 }
 
 func NewGeminiHandler(
@@ -40,6 +43,7 @@ func NewGeminiHandler(
 	reqTransformer *transformer.RequestTransformer,
 	respTransformer *transformer.ResponseTransformer,
 	maxRequestBodyBytes int64,
+	usageLogger *core.UsageLogger,
 ) *GeminiHandler {
 	if maxRequestBodyBytes <= 0 {
 		maxRequestBodyBytes = 50 * 1024 * 1024 // 50MB default
@@ -53,24 +57,38 @@ func NewGeminiHandler(
 		reqTransformer:      reqTransformer,
 		respTransformer:     respTransformer,
 		maxRequestBodyBytes: maxRequestBodyBytes,
+		usageLogger:         usageLogger,
 	}
 }
 
 // RegisterRoutes mounts the handler onto the provided mux.
-// Route: POST /v1beta/models/{model}:generateContent (JWT-protected)
+// Route: POST /v1beta/models/{model}:generateContent (API Key protected)
 // Route: GET /v1beta/models (public)
 // Route: GET /health (public)
+// Note: API Key middleware should be applied at the mux level in main.go
 func (h *GeminiHandler) RegisterRoutes(mux *http.ServeMux) {
-	protected := core.NewJWTMiddleware(h.issuer, h.handleProtected)
-	mux.Handle("POST /v1beta/models/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		protected.ServeHTTP(w, r)
-	}))
+	mux.HandleFunc("POST /v1beta/models/", h.handleGenerateContent)
 	mux.HandleFunc("GET /v1beta/models", h.handleListModels)
 	mux.HandleFunc("GET /health", h.handleHealth)
 }
 
 func (h *GeminiHandler) handleListModels(w http.ResponseWriter, r *http.Request) {
-	models := h.reqTransformer.ListModels()
+	// Return a static list of supported models
+	// In the future, this could be dynamic based on available channels
+	models := []map[string]any{
+		{
+			"name":        "gemini-3.1-flash-image-preview",
+			"description": "Fast image generation model",
+		},
+		{
+			"name":        "gemini-3-pro-image-preview",
+			"description": "High quality image generation model",
+		},
+		{
+			"name":        "gemini-2.5-flash-image",
+			"description": "Latest flash image generation model",
+		},
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"models": models})
 }
@@ -79,17 +97,6 @@ func (h *GeminiHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
-}
-
-// handleProtected is called by JWTMiddleware after JWT validation succeeds.
-// JWT only carries channel restriction (optional). Account selection is done
-// internally by the channel's pool.
-func (h *GeminiHandler) handleProtected(ctx context.Context, claims *core.JWTClaims, w http.ResponseWriter, r *http.Request) {
-	if claims.Channel != "" {
-		ctx = core.WithChannelRestriction(ctx, claims.Channel)
-		r = r.WithContext(ctx)
-	}
-	h.handleGenerateContent(w, r)
 }
 
 // isStreamingRequest detects whether the client expects an SSE streaming response.
@@ -121,6 +128,9 @@ func (rw *httpResponseWriter) Flush() { rw.flusher.Flush() }
 func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r *http.Request, googleModel string, googleReq *model.GoogleRequest, bodyBytes []byte, requestID string) {
 	ctx := r.Context()
 	log := slog.With("requestId", requestID, "googleModel", googleModel)
+	requestIP := extractClientIP(r)
+	var totalLatency int64
+	var lastChannel string
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -130,9 +140,13 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 		return
 	}
 
-	// Exclude gpt-image channels from Gemini routes
+	// Only include Gemini channels for Gemini routes
 	filter := &core.ChannelTypeFilter{
-		Exclude: []string{"gpt-image"},
+		Include: []string{
+			"gemini_callback",
+			"gemini_openai",
+			"gemini_original",
+		},
 	}
 	channels, err := h.router.RouteWithTypeFilter(ctx, filter)
 	if err != nil {
@@ -148,6 +162,7 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 	for _, candidate := range channels {
 		chLog := log.With("channel", candidate.Name())
 		start := time.Now()
+		lastChannel = candidate.Name()
 
 		// --- Path 1: RawStreamGenerator (gemini native pass-through) ---
 		if rawStream, ok := candidate.(core.RawStreamGenerator); ok {
@@ -157,11 +172,23 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 					chLog.Info("request cancelled, not recording failure")
 					return
 				}
-				h.router.RecordResult(candidate.Name(), false, time.Since(start).Milliseconds())
+				latency := time.Since(start).Milliseconds()
+				totalLatency += latency
+				h.router.RecordResult(candidate.Name(), false, latency)
+				// 中间渠道失败 - 记录日志但不更新统计
+				errMsg := ""
+				if err != nil {
+					errMsg = err.Error()
+				}
+				h.logUsage(ctx, candidate.Name(), googleModel, false, 0, errMsg, latency, requestIP, false)
 				chLog.Warn("raw stream failed, trying next channel", "err", err)
 				continue
 			}
-			h.router.RecordResult(candidate.Name(), true, time.Since(start).Milliseconds())
+			latency := time.Since(start).Milliseconds()
+			totalLatency += latency
+			h.router.RecordResult(candidate.Name(), true, latency)
+			// 最终成功 - 记录使用日志并更新统计
+			h.logUsage(ctx, candidate.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true)
 			return
 		}
 
@@ -173,11 +200,23 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 					chLog.Info("request cancelled, not recording failure")
 					return
 				}
-				h.router.RecordResult(candidate.Name(), false, time.Since(start).Milliseconds())
+				latency := time.Since(start).Milliseconds()
+				totalLatency += latency
+				h.router.RecordResult(candidate.Name(), false, latency)
+				// 中间渠道失败 - 记录日志但不更新统计
+				errMsg := ""
+				if err != nil {
+					errMsg = err.Error()
+				}
+				h.logUsage(ctx, candidate.Name(), googleModel, false, 0, errMsg, latency, requestIP, false)
 				chLog.Warn("stream failed, trying next channel", "err", err)
 				continue
 			}
-			h.router.RecordResult(candidate.Name(), true, time.Since(start).Milliseconds())
+			latency := time.Since(start).Milliseconds()
+			totalLatency += latency
+			h.router.RecordResult(candidate.Name(), true, latency)
+			// 最终成功 - 记录使用日志并更新统计
+			h.logUsage(ctx, candidate.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true)
 			return
 		}
 
@@ -189,7 +228,15 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 				chLog.Info("request cancelled during submitTask, not recording failure", "err", submitErr)
 				return
 			}
+			latency := time.Since(start).Milliseconds()
+			totalLatency += latency
 			h.router.RecordResult(candidate.Name(), false, 0)
+			// 中间渠道失败 - 记录日志但不更新统计
+			errMsg := ""
+			if submitErr != nil {
+				errMsg = submitErr.Error()
+			}
+			h.logUsage(ctx, candidate.Name(), googleModel, false, 0, errMsg, latency, requestIP, false)
 			chLog.Warn("submitTask failed, trying next channel", "err", submitErr)
 			continue
 		}
@@ -206,17 +253,25 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 
 		select {
 		case result := <-resultCh:
+			latency := time.Since(start).Milliseconds()
+			totalLatency += latency
+			
 			if result.Error != nil {
 				chLog.Error("task failed", "err", result.Error)
 				var tErr *kieai.TaskFailedError
+				var errMsg string
 				if errors.As(result.Error, &tErr) {
+					errMsg = tErr.Reason
 					gErr, _ := transformer.ToGoogleError(500, tErr.Reason)
 					h.writeSSEError(w, gErr, 500)
 				} else {
-					gErr, _ := transformer.ToGoogleError(500, result.Error.Error())
+					errMsg = result.Error.Error()
+					gErr, _ := transformer.ToGoogleError(500, errMsg)
 					h.writeSSEError(w, gErr, 500)
 				}
-				h.router.RecordResult(candidate.Name(), false, time.Since(start).Milliseconds())
+				h.router.RecordResult(candidate.Name(), false, latency)
+				// 最终失败 - 记录使用日志并更新统计
+				h.logUsage(ctx, candidate.Name(), googleModel, false, 500, errMsg, totalLatency, requestIP, true)
 				return
 			}
 			record := result.Record
@@ -224,7 +279,9 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 				chLog.Error("task succeeded but no result URLs")
 				gErr, _ := transformer.ToGoogleError(500, "no result URLs")
 				h.writeSSEError(w, gErr, 500)
-				h.router.RecordResult(candidate.Name(), false, time.Since(start).Milliseconds())
+				h.router.RecordResult(candidate.Name(), false, latency)
+				// 最终失败 - 记录使用日志并更新统计
+				h.logUsage(ctx, candidate.Name(), googleModel, false, 500, "no result URLs", totalLatency, requestIP, true)
 				return
 			}
 			googleResp, err := h.respTransformer.ToGoogleStreamingResponse(ctx, record.ResultJSON().ResultURLs, requestID, isImageOnlyRequest(googleReq))
@@ -232,12 +289,16 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 				chLog.Error("response transform failed", "err", err)
 				gErr, _ := transformer.ToGoogleError(500, err.Error())
 				h.writeSSEError(w, gErr, 500)
-				h.router.RecordResult(candidate.Name(), false, time.Since(start).Milliseconds())
+				h.router.RecordResult(candidate.Name(), false, latency)
+				// 最终失败 - 记录使用日志并更新统计
+				h.logUsage(ctx, candidate.Name(), googleModel, false, 500, err.Error(), totalLatency, requestIP, true)
 				return
 			}
 			h.writeSSEData(w, flusher, googleResp)
 			h.writeSSEEvent(w, flusher, "data: [DONE]\n\n")
-			h.router.RecordResult(candidate.Name(), true, time.Since(start).Milliseconds())
+			h.router.RecordResult(candidate.Name(), true, latency)
+			// 最终成功 - 记录使用日志并更新统计
+			h.logUsage(ctx, candidate.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true)
 		case <-ctx.Done():
 			chLog.Info("request cancelled")
 			h.writeSSEError(w, model.GoogleError{
@@ -247,7 +308,9 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 		return
 	}
 
+	// 所有渠道都失败 - 最终失败，记录使用日志并更新统计
 	log.Error("all channels failed for streaming request")
+	h.logUsage(ctx, lastChannel, googleModel, false, http.StatusServiceUnavailable, "all channels failed", totalLatency, requestIP, true)
 	h.writeSSEError(w, model.GoogleError{
 		Error: model.GoogleErrorDetail{Code: 503, Message: "all channels failed", Status: "UNAVAILABLE"},
 	}, http.StatusServiceUnavailable)
@@ -286,6 +349,14 @@ func (h *GeminiHandler) writeSSEError(w http.ResponseWriter, e model.GoogleError
 
 func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	
+	// API Key ID is injected by APIKeyMiddleware
+	apiKeyID, ok := middleware.GetAPIKeyID(ctx)
+	if !ok {
+		writeJSONError(w, http.StatusUnauthorized, "invalid or expired token")
+		return
+	}
+	_ = apiKeyID // API Key ID will be used for usage logging
 
 	suffix := strings.TrimPrefix(r.URL.Path, "/v1beta/models/")
 	googleModel, action, found := strings.Cut(suffix, ":")
@@ -343,9 +414,13 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 	}
 
 	// Get ordered fallback list — honours JWT channel restriction if present.
-	// Exclude gpt-image channels from Gemini routes.
+	// Only include Gemini channels for Gemini routes.
 	filter := &core.ChannelTypeFilter{
-		Exclude: []string{"gpt-image"},
+		Include: []string{
+			"gemini_callback",
+			"gemini_openai",
+			"gemini_original",
+		},
 	}
 	channels, err := h.router.RouteWithTypeFilter(ctx, filter)
 	if err != nil {
@@ -358,17 +433,26 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 
 	// Try each channel in priority order, falling back on failure.
 	var lastErr error
+	var lastChannel string
+	var totalLatency int64
+	requestIP := extractClientIP(r)
+	
 	for _, ch := range channels {
 		chLog := log.With("channel", ch.Name())
 		start := time.Now()
+		lastChannel = ch.Name()
 
 		// Fast path: channels implementing RawBodyGenerator bypass struct
 		// conversion entirely and return raw bytes for direct pass-through.
 		if rawGen, ok := ch.(core.RawBodyGenerator); ok {
 			rawResp, err := rawGen.GenerateRaw(ctx, bodyBytes, googleModel)
 			latency := time.Since(start).Milliseconds()
+			totalLatency += latency
+			
 			if err == nil {
 				h.router.RecordResult(ch.Name(), true, latency)
+				// 最终成功 - 记录使用日志并更新统计
+				h.logUsage(ctx, ch.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				w.Write(rawResp)
@@ -380,6 +464,12 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 				break
 			}
 			h.router.RecordResult(ch.Name(), false, latency)
+			// 中间渠道失败 - 记录日志但不更新统计
+			errMsg := ""
+			if err != nil {
+				errMsg = err.Error()
+			}
+			h.logUsage(ctx, ch.Name(), googleModel, false, 0, errMsg, latency, requestIP, false)
 			chLog.Warn("channel failed, trying next", "err", err)
 			lastErr = err
 			continue
@@ -387,9 +477,12 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 
 		googleResp, err := h.tryChannel(ctx, ch, &googleReq, googleModel)
 		latency := time.Since(start).Milliseconds()
+		totalLatency += latency
 
 		if err == nil {
 			h.router.RecordResult(ch.Name(), true, latency)
+			// 最终成功 - 记录使用日志并更新统计
+			h.logUsage(ctx, ch.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(googleResp)
@@ -403,17 +496,29 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 		}
 
 		h.router.RecordResult(ch.Name(), false, latency)
+		// 中间渠道失败 - 记录日志但不更新统计
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		h.logUsage(ctx, ch.Name(), googleModel, false, 0, errMsg, latency, requestIP, false)
 		chLog.Warn("channel failed, trying next", "err", err)
 		lastErr = err
 	}
 
-	// All channels failed.
+	// All channels failed - 最终失败，记录使用日志并更新统计
 	log.Error("all channels failed", "err", lastErr)
 	var tErr *kieai.TaskFailedError
 	if errors.As(lastErr, &tErr) {
 		gErr, httpCode := transformer.ToGoogleError(500, tErr.Reason)
+		h.logUsage(ctx, lastChannel, googleModel, false, httpCode, tErr.Reason, totalLatency, requestIP, true)
 		writeGoogleError(w, gErr, httpCode)
 	} else {
+		errMsg := "all channels failed"
+		if lastErr != nil {
+			errMsg = lastErr.Error()
+		}
+		h.logUsage(ctx, lastChannel, googleModel, false, http.StatusServiceUnavailable, errMsg, totalLatency, requestIP, true)
 		writeGoogleError(w, model.GoogleError{
 			Error: model.GoogleErrorDetail{Code: 503, Message: "all channels failed", Status: "UNAVAILABLE"},
 		}, http.StatusServiceUnavailable)
@@ -470,4 +575,54 @@ func generateRequestID() string {
 		return "unknown"
 	}
 	return hex.EncodeToString(b)
+}
+
+// logUsage 记录 API Key 使用情况
+// updateStats 为 true 时更新 TotalSuccess/TotalFail，false 时只记录日志不更新统计
+func (h *GeminiHandler) logUsage(ctx context.Context, channelName, model string, success bool, statusCode int, errorMsg string, latencyMs int64, requestIP string, updateStats bool) {
+	if h.usageLogger == nil {
+		return
+	}
+	
+	// 从 context 获取 API Key ID
+	apiKeyID, ok := middleware.GetAPIKeyID(ctx)
+	if !ok {
+		// 可能是使用 JWT 认证的请求，不记录
+		return
+	}
+	
+	var errMsg *string
+	if errorMsg != "" {
+		errMsg = &errorMsg
+	}
+	
+	var status *int
+	if statusCode > 0 {
+		status = &statusCode
+	}
+	
+	var latency *int
+	if latencyMs > 0 {
+		latencyInt := int(latencyMs)
+		latency = &latencyInt
+	}
+	
+	var ip *string
+	if requestIP != "" {
+		ip = &requestIP
+	}
+	
+	entry := database.LogEntry{
+		APIKeyID:     apiKeyID,
+		ChannelName:  channelName,
+		Model:        model,
+		Success:      success,
+		StatusCode:   status,
+		ErrorMessage: errMsg,
+		LatencyMs:    latency,
+		RequestIP:    ip,
+		UpdateStats:  updateStats, // 是否更新统计
+	}
+	
+	h.usageLogger.Log(entry)
 }

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { AuthGuard } from "@/components/AuthGuard";
 import { AppShell } from "@/components/AppShell";
+import { DialogProvider } from "@/components/Dialog";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -16,9 +17,11 @@ export default function RootLayout({
   return (
     <html lang="zh-CN">
       <body>
-        <AuthGuard>
-          <AppShell>{children}</AppShell>
-        </AuthGuard>
+        <DialogProvider>
+          <AuthGuard>
+            <AppShell>{children}</AppShell>
+          </AuthGuard>
+        </DialogProvider>
       </body>
     </html>
   );

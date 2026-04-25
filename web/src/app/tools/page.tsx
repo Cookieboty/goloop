@@ -123,7 +123,7 @@ export default function ToolsPage() {
   };
 
   return (
-    <div>
+    <div className="p-6 lg:p-8 max-w-7xl mx-auto">
       <PageTitle>工具</PageTitle>
 
       {/* Quick token */}

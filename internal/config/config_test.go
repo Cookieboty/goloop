@@ -21,8 +21,8 @@ func TestLoad(t *testing.T) {
 	if cfg.Server.Port != 8080 {
 		t.Errorf("port: got %d, want 8080", cfg.Server.Port)
 	}
-	if cfg.Server.ReadTimeout != 130*time.Second {
-		t.Errorf("read_timeout: got %v, want 130s", cfg.Server.ReadTimeout)
+	if cfg.Server.ReadTimeout != 1300*time.Second {
+		t.Errorf("read_timeout: got %v, want 1300s", cfg.Server.ReadTimeout)
 	}
 	if cfg.AdminPassword != testAdminPassword {
 		t.Errorf("admin_password: got %q", cfg.AdminPassword)

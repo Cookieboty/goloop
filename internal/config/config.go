@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -14,9 +13,9 @@ type Config struct {
 	Storage       StorageConfig
 	Health        HealthConfig
 	RateLimit     RateLimitConfig
+	Redis         RedisConfig
 	AdminPassword string
-	Channels      map[string]ChannelConfig
-	ModelMapping  map[string]ModelDefaults
+	DatabaseURL   string
 }
 
 type ServerConfig struct {
@@ -51,29 +50,10 @@ type RateLimitConfig struct {
 	Burst int
 }
 
-type ChannelConfig struct {
-	Type            string
-	BaseURL         string
-	Weight          int
-	Timeout         time.Duration
-	InitialInterval time.Duration
-	MaxInterval     time.Duration
-	MaxWaitTime     time.Duration
-	RetryAttempts   int
-	Accounts        []AccountConfig
-}
-
-type AccountConfig struct {
-	APIKey string
-	Weight int
-}
-
-type ModelDefaults struct {
-	Channel      string
-	KieAIModel   string
-	AspectRatio  string
-	Resolution   string
-	OutputFormat string
+type RedisConfig struct {
+	URL           string
+	Enabled       bool
+	APIKeyCacheTTL time.Duration
 }
 
 func getEnv(key, fallback string) string {
@@ -103,60 +83,16 @@ func getEnvInt(key string, fallback int) int {
 	return n
 }
 
-// ChannelEnvPrefix converts a channel name to its environment variable prefix.
-// e.g. "kieai" -> "CHANNEL_KIEAI_", "gemini-direct" -> "CHANNEL_GEMINI_DIRECT_"
-func ChannelEnvPrefix(name string) string {
-	upper := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
-	return "CHANNEL_" + upper + "_"
-}
-
-// parseAccounts parses the ACCOUNTS env value: "key1:50,key2:30,key3"
-// Each entry is apikey:weight; weight defaults to 100 if omitted.
-func parseAccounts(raw string) []AccountConfig {
-	var accounts []AccountConfig
-	for _, entry := range strings.Split(raw, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		parts := strings.SplitN(entry, ":", 2)
-		apiKey := strings.TrimSpace(parts[0])
-		if apiKey == "" {
-			continue
-		}
-		weight := 100
-		if len(parts) == 2 {
-			if w, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil && w > 0 {
-				weight = w
-			}
-		}
-		accounts = append(accounts, AccountConfig{APIKey: apiKey, Weight: weight})
+func getEnvBool(key string, fallback bool) bool {
+	s := os.Getenv(key)
+	if s == "" {
+		return fallback
 	}
-	return accounts
-}
-
-// loadChannelFromEnv loads a single channel config using the CHANNEL_<NAME>_* prefix.
-func loadChannelFromEnv(name string) (ChannelConfig, bool) {
-	pfx := ChannelEnvPrefix(name)
-	baseURL := os.Getenv(pfx + "BASE_URL")
-	if baseURL == "" {
-		return ChannelConfig{}, false
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		return fallback
 	}
-	chType := getEnv(pfx+"TYPE", name)
-	accountsRaw := os.Getenv(pfx + "ACCOUNTS")
-	accounts := parseAccounts(accountsRaw)
-
-	return ChannelConfig{
-		Type:            chType,
-		BaseURL:         baseURL,
-		Weight:          getEnvInt(pfx+"WEIGHT", 100),
-		Timeout:         getEnvDuration(pfx+"TIMEOUT", "120s"),
-		InitialInterval: getEnvDuration(pfx+"INITIAL_INTERVAL", "2s"),
-		MaxInterval:     getEnvDuration(pfx+"MAX_INTERVAL", "10s"),
-		MaxWaitTime:     getEnvDuration(pfx+"MAX_WAIT_TIME", "120s"),
-		RetryAttempts:   getEnvInt(pfx+"RETRY_ATTEMPTS", 3),
-		Accounts:        accounts,
-	}, true
+	return v
 }
 
 // Load reads configuration from environment variables.
@@ -179,16 +115,22 @@ func loadChannelFromEnv(name string) (ChannelConfig, bool) {
 //	... up to KIEAI_KEY_50
 func Load() (*Config, error) {
 	cfg := &Config{
+		DatabaseURL:   getEnv("DATABASE_URL", ""),
 		AdminPassword: getEnv("ADMIN_PASSWORD", ""),
 		Server: ServerConfig{
 			Port:                getEnvInt("SERVER_PORT", 8080),
-			ReadTimeout:         getEnvDuration("SERVER_READ_TIMEOUT", "130s"),
-			WriteTimeout:        getEnvDuration("SERVER_WRITE_TIMEOUT", "130s"),
+			ReadTimeout:         getEnvDuration("SERVER_READ_TIMEOUT", "1300s"),
+			WriteTimeout:        getEnvDuration("SERVER_WRITE_TIMEOUT", "1300s"),
 			MaxRequestBodyBytes: int64(getEnvInt("SERVER_MAX_REQUEST_BODY_MB", 50)) * 1024 * 1024,
 		},
 		JWT: JWTConfig{
 			Secret: getEnv("JWT_SECRET", "dev-secret-change-in-production"),
 			Expiry: getEnvDuration("JWT_EXPIRY", "24h"),
+		},
+		Redis: RedisConfig{
+			Enabled:        getEnvBool("REDIS_ENABLED", true),
+			URL:            getEnv("REDIS_URL", ""),
+			APIKeyCacheTTL: getEnvDuration("REDIS_APIKEY_CACHE_TTL", "5m"),
 		},
 		Storage: StorageConfig{
 			Type:            getEnv("STORAGE_TYPE", "local"),
@@ -207,71 +149,6 @@ func Load() (*Config, error) {
 			RPS:   float64(getEnvInt("RATELIMIT_RPS", 0)),
 			Burst: getEnvInt("RATELIMIT_BURST", 10),
 		},
-		ModelMapping: map[string]ModelDefaults{
-			"gemini-3.1-flash-image-preview": {
-				Channel:      "kieai",
-				KieAIModel:   getEnv("MODEL_NANO_BANANA_2", "nano-banana-2"),
-				AspectRatio:  "1:1",
-				Resolution:   "1K",
-				OutputFormat: "png",
-			},
-			"gemini-3-pro-image-preview": {
-				Channel:      "kieai",
-				KieAIModel:   getEnv("MODEL_NANO_BANANA_PRO", "nano-banana-pro"),
-				AspectRatio:  "1:1",
-				Resolution:   "2K",
-				OutputFormat: "png",
-			},
-			"gemini-2.5-flash-image": {
-				Channel:      "kieai",
-				KieAIModel:   getEnv("MODEL_GOOGLE_NANO_BANANA", "google/nano-banana"),
-				AspectRatio:  "1:1",
-				Resolution:   "1K",
-				OutputFormat: "png",
-			},
-		},
-	}
-
-	cfg.Channels = make(map[string]ChannelConfig)
-
-	// New multi-channel format: CHANNELS=kieai,gemini-direct
-	if channelsEnv := os.Getenv("CHANNELS"); channelsEnv != "" {
-		for _, name := range strings.Split(channelsEnv, ",") {
-			name = strings.TrimSpace(name)
-			if name == "" {
-				continue
-			}
-			chCfg, ok := loadChannelFromEnv(name)
-			if !ok {
-				return nil, fmt.Errorf("config: channel %q listed in CHANNELS but CHANNEL_%s_BASE_URL is not set",
-					name, strings.ToUpper(strings.ReplaceAll(name, "-", "_")))
-			}
-			cfg.Channels[name] = chCfg
-		}
-	} else {
-		// Legacy format: KIEAI_BASE_URL + KIEAI_KEY_N (up to 50 accounts)
-		kieBaseURL := getEnv("KIEAI_BASE_URL", "")
-		if kieBaseURL != "" {
-			kieCh := ChannelConfig{
-				Type:            "kieai",
-				BaseURL:         kieBaseURL,
-				Weight:          getEnvInt("KIEAI_WEIGHT", 100),
-				Timeout:         getEnvDuration("KIEAI_TIMEOUT", "120s"),
-				InitialInterval: getEnvDuration("POLLER_INITIAL_INTERVAL", "2s"),
-				MaxInterval:     getEnvDuration("POLLER_MAX_INTERVAL", "10s"),
-				MaxWaitTime:     getEnvDuration("POLLER_MAX_WAIT_TIME", "120s"),
-				RetryAttempts:   getEnvInt("POLLER_RETRY_ATTEMPTS", 3),
-			}
-			for i := 1; i <= 50; i++ {
-				key := os.Getenv(fmt.Sprintf("KIEAI_KEY_%d", i))
-				if key == "" {
-					continue
-				}
-				weight := getEnvInt(fmt.Sprintf("KIEAI_WEIGHT_%d", i), 100)
-				kieCh.Accounts = append(kieCh.Accounts, AccountConfig{APIKey: key, Weight: weight})
-			}
-			cfg.Channels["kieai"] = kieCh
-		}
 	}
 
 	if err := validate(cfg); err != nil {
@@ -295,6 +172,12 @@ func validate(cfg *Config) error {
 	}
 	if len(cfg.AdminPassword) < 16 {
 		return fmt.Errorf("config: ADMIN_PASSWORD must be at least 16 characters")
+	}
+	if cfg.DatabaseURL == "" {
+		return fmt.Errorf("config: DATABASE_URL is required")
+	}
+	if cfg.Redis.Enabled && cfg.Redis.URL == "" {
+		return fmt.Errorf("config: REDIS_URL is required when Redis is enabled")
 	}
 	return nil
 }

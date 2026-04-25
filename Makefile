@@ -76,13 +76,15 @@ build-go:
 	@echo "编译完成: bin/$(BINARY_NAME)"
 
 # 加载 .env 文件（如果存在）
--include .env
-export
+ifneq (,$(wildcard ./.env))
+    include .env
+    export
+endif
 
 # 运行服务
 run:
 	@echo "启动服务..."
-	@. ./.env && $(GO) run $(MAIN_PATH)
+	@set -a && . ./.env && set +a && $(GO) run $(MAIN_PATH)
 
 # 测试
 test:
@@ -188,7 +190,7 @@ ps:
 # 开发环境
 dev: build
 	@echo "启动开发模式..."
-	@. ./.env && ./bin/$(BINARY_NAME)
+	@set -a && . ./.env && set +a && ./bin/$(BINARY_NAME)
 
 # 安装开发依赖
 install-tools:

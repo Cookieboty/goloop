@@ -12,9 +12,9 @@ import (
     "github.com/golang-jwt/jwt/v5"
 )
 
-type contextKey string
+type jwtContextKey string
 
-const contextKeyClaims contextKey = "jwt_claims"
+const contextKeyClaims jwtContextKey = "jwt_claims"
 
 // JWTClaims represents the claims embedded in the JWT.
 type JWTClaims struct {
@@ -76,6 +76,7 @@ func NewJWTMiddleware(issuer *JWTIssuer, next func(ctx context.Context, claims *
 func (m *JWTMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token := extractBearerToken(r)
 	if token == "" {
+		slog.Debug("jwt middleware: no bearer token")
 		mask := func(v string) string {
 			if len(v) > 16 {
 				return v[:8] + "..." + v[len(v)-4:]

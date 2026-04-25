@@ -7,10 +7,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
-	"goloop/internal/channels/gptimage"
+	"goloop/internal/channels/openai_original"
 	"goloop/internal/core"
+	"goloop/internal/database"
+	"goloop/internal/middleware"
 	"goloop/internal/model"
 )
 
@@ -23,14 +26,18 @@ type OpenAIHandler struct {
 	router              *core.Router
 	registry            *core.PluginRegistry
 	issuer              *core.JWTIssuer
+	configMgr           *core.ConfigManager
 	maxRequestBodyBytes int64
+	usageLogger         *core.UsageLogger
 }
 
 func NewOpenAIHandler(
 	router *core.Router,
 	registry *core.PluginRegistry,
 	issuer *core.JWTIssuer,
+	configMgr *core.ConfigManager,
 	maxRequestBodyBytes int64,
+	usageLogger *core.UsageLogger,
 ) *OpenAIHandler {
 	if maxRequestBodyBytes <= 0 {
 		maxRequestBodyBytes = 50 * 1024 * 1024
@@ -39,55 +46,32 @@ func NewOpenAIHandler(
 		router:              router,
 		registry:            registry,
 		issuer:              issuer,
+		configMgr:           configMgr,
 		maxRequestBodyBytes: maxRequestBodyBytes,
+		usageLogger:         usageLogger,
 	}
 }
 
 // RegisterRoutes mounts the handler onto the provided mux.
+// Note: API Key middleware should be applied at the mux level in main.go
 func (h *OpenAIHandler) RegisterRoutes(mux *http.ServeMux) {
-	chatProtected := core.NewJWTMiddleware(h.issuer, h.handleChatCompletionsProtected)
-	imagesGenProtected := core.NewJWTMiddleware(h.issuer, h.handleImagesGenerationsProtected)
-	imagesEditProtected := core.NewJWTMiddleware(h.issuer, h.handleImagesEditsProtected)
-
-	mux.Handle("POST /v1/chat/completions", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		chatProtected.ServeHTTP(w, r)
-	}))
-	mux.Handle("POST /v1/images/generations", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		imagesGenProtected.ServeHTTP(w, r)
-	}))
-	mux.Handle("POST /v1/images/edits", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		imagesEditProtected.ServeHTTP(w, r)
-	}))
-
+	mux.HandleFunc("POST /v1/chat/completions", h.handleChatCompletions)
+	mux.HandleFunc("POST /v1/images/generations", h.handleImagesGenerations)
+	mux.HandleFunc("POST /v1/images/edits", h.handleImagesEdits)
 	mux.HandleFunc("GET /v1/models", h.handleListModels)
-}
-
-func (h *OpenAIHandler) handleChatCompletionsProtected(ctx context.Context, claims *core.JWTClaims, w http.ResponseWriter, r *http.Request) {
-	if claims.Channel != "" {
-		ctx = core.WithChannelRestriction(ctx, claims.Channel)
-		r = r.WithContext(ctx)
-	}
-	h.handleChatCompletions(w, r)
-}
-
-func (h *OpenAIHandler) handleImagesGenerationsProtected(ctx context.Context, claims *core.JWTClaims, w http.ResponseWriter, r *http.Request) {
-	if claims.Channel != "" {
-		ctx = core.WithChannelRestriction(ctx, claims.Channel)
-		r = r.WithContext(ctx)
-	}
-	h.handleImagesGenerations(w, r)
-}
-
-func (h *OpenAIHandler) handleImagesEditsProtected(ctx context.Context, claims *core.JWTClaims, w http.ResponseWriter, r *http.Request) {
-	if claims.Channel != "" {
-		ctx = core.WithChannelRestriction(ctx, claims.Channel)
-		r = r.WithContext(ctx)
-	}
-	h.handleImagesEdits(w, r)
 }
 
 // handleChatCompletions handles POST /v1/chat/completions (streaming or not).
 func (h *OpenAIHandler) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	
+	// API Key ID is injected by APIKeyMiddleware
+	apiKeyID, ok := middleware.GetAPIKeyID(ctx)
+	if !ok {
+		writeJSONError(w, http.StatusUnauthorized, "invalid or expired token")
+		return
+	}
+	_ = apiKeyID // API Key ID will be used for usage logging
 	bodyBytes, ok := h.readBody(w, r)
 	if !ok {
 		return
@@ -116,6 +100,16 @@ func (h *OpenAIHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 
 // handleImagesGenerations handles POST /v1/images/generations (non-streaming).
 func (h *OpenAIHandler) handleImagesGenerations(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	
+	// API Key ID is injected by APIKeyMiddleware
+	apiKeyID, ok := middleware.GetAPIKeyID(ctx)
+	if !ok {
+		writeJSONError(w, http.StatusUnauthorized, "invalid or expired token")
+		return
+	}
+	_ = apiKeyID // API Key ID will be used for usage logging
+	
 	bodyBytes, ok := h.readBody(w, r)
 	if !ok {
 		return
@@ -131,6 +125,16 @@ func (h *OpenAIHandler) handleImagesGenerations(w http.ResponseWriter, r *http.R
 // The raw multipart body is forwarded with its original Content-Type (which
 // contains the boundary) so the upstream can parse it.
 func (h *OpenAIHandler) handleImagesEdits(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	
+	// API Key ID is injected by APIKeyMiddleware
+	apiKeyID, ok := middleware.GetAPIKeyID(ctx)
+	if !ok {
+		writeJSONError(w, http.StatusUnauthorized, "invalid or expired token")
+		return
+	}
+	_ = apiKeyID // API Key ID will be used for usage logging
+	
 	bodyBytes, ok := h.readBody(w, r)
 	if !ok {
 		return
@@ -157,13 +161,15 @@ func (h *OpenAIHandler) readBody(w http.ResponseWriter, r *http.Request) ([]byte
 	return bodyBytes, true
 }
 
-// selectCandidates returns gpt-image channel candidates (or writes an error response).
+// selectCandidates returns OpenAI image channel candidates (or writes an error response).
+// Only includes OpenAI channel types (openai_original, openai_callback).
 func (h *OpenAIHandler) selectCandidates(w http.ResponseWriter, r *http.Request) ([]core.Channel, bool) {
-	filter := &core.ChannelTypeFilter{Include: []string{"gpt-image"}}
+	filter := &core.ChannelTypeFilter{Include: []string{"openai_original", "openai_callback"}}
 	candidates, err := h.router.RouteWithTypeFilter(r.Context(), filter)
+	
 	if err != nil {
-		slog.Error("no gpt-image channels available", "error", err)
-		h.writeOpenAIError(w, "No gpt-image channels available", "api_error", http.StatusServiceUnavailable)
+		slog.Error("no OpenAI image channels available", "error", err)
+		h.writeOpenAIError(w, "No OpenAI image channels available", "api_error", http.StatusServiceUnavailable)
 		return nil, false
 	}
 	return candidates, true
@@ -179,9 +185,16 @@ func (h *OpenAIHandler) dispatchNonStream(
 ) {
 	ctx := r.Context()
 	var lastErr error
+	var lastChannel string
+	var totalLatency int64
+	requestIP := extractClientIP(r)
+	
+	// 从请求体中提取 model（如果可能）
+	model := extractModelFromBody(bodyBytes)
 
 	for _, ch := range candidates {
 		chLog := slog.With("channel", ch.Name(), "endpoint", endpoint)
+		lastChannel = ch.Name()
 
 		rawGen, ok := ch.(core.OpenAIRawGenerator)
 		if !ok {
@@ -189,9 +202,27 @@ func (h *OpenAIHandler) dispatchNonStream(
 			continue
 		}
 
+		// Apply model mapping for this channel
+		transformedBody := bodyBytes
+		if h.configMgr != nil {
+			var reqBody map[string]interface{}
+			if err := json.Unmarshal(bodyBytes, &reqBody); err == nil {
+				if sourceModel, ok := reqBody["model"].(string); ok && sourceModel != "" {
+					if targetModel := h.configMgr.GetModelMapping(ch.Name(), sourceModel); targetModel != "" {
+						reqBody["model"] = targetModel
+						if newBody, err := json.Marshal(reqBody); err == nil {
+							transformedBody = newBody
+							chLog.Debug("applied model mapping", "source", sourceModel, "target", targetModel)
+						}
+					}
+				}
+			}
+		}
+		
 		start := time.Now()
-		resp, err := rawGen.GenerateOpenAIRaw(ctx, contentType, bodyBytes, endpoint)
+		resp, err := rawGen.GenerateOpenAIRaw(ctx, contentType, transformedBody, endpoint)
 		latencyMs := time.Since(start).Milliseconds()
+		totalLatency += latencyMs
 
 		// Client cancellation must not count as a channel failure.
 		if ctx.Err() != nil {
@@ -201,6 +232,12 @@ func (h *OpenAIHandler) dispatchNonStream(
 
 		if err != nil {
 			h.router.RecordResult(ch.Name(), false, latencyMs)
+			// 中间渠道失败 - 记录日志但不更新统计
+			errMsg := ""
+			if err != nil {
+				errMsg = err.Error()
+			}
+			h.logUsage(ctx, ch.Name(), model, false, 0, errMsg, latencyMs, requestIP, false)
 			chLog.Warn("channel transport error, trying next", "err", err)
 			lastErr = err
 			continue
@@ -209,6 +246,8 @@ func (h *OpenAIHandler) dispatchNonStream(
 		// Upstream returned — decide whether to fall back.
 		if shouldFallbackOnStatus(resp.Status) {
 			h.router.RecordResult(ch.Name(), false, latencyMs)
+			// 中间渠道失败（retriable status）- 记录日志但不更新统计
+			h.logUsage(ctx, ch.Name(), model, false, resp.Status, http.StatusText(resp.Status), latencyMs, requestIP, false)
 			chLog.Warn("channel returned retriable status, trying next", "status", resp.Status)
 			lastErr = statusError(resp.Status)
 			continue
@@ -219,11 +258,20 @@ func (h *OpenAIHandler) dispatchNonStream(
 		// 2xx → success; 4xx client-fault → also record as "success" for
 		// health purposes (the channel is working; the client sent a bad request).
 		h.router.RecordResult(ch.Name(), true, latencyMs)
+		// 最终成功/响应 - 记录使用日志并更新统计
+		isSuccess := resp.Status >= 200 && resp.Status < 300
+		h.logUsage(ctx, ch.Name(), model, isSuccess, resp.Status, "", totalLatency, requestIP, true)
 		return
 	}
 
-	slog.Error("all gpt-image channels failed", "endpoint", endpoint, "lastErr", lastErr)
-	h.writeOpenAIError(w, "All gpt-image channels failed", "api_error", http.StatusBadGateway)
+	// 所有渠道都失败 - 记录使用日志并更新统计
+	slog.Error("all OpenAI image channels failed", "endpoint", endpoint, "lastErr", lastErr)
+	errMsg := "all OpenAI image channels failed"
+	if lastErr != nil {
+		errMsg = lastErr.Error()
+	}
+	h.logUsage(ctx, lastChannel, model, false, http.StatusBadGateway, errMsg, totalLatency, requestIP, true)
+	h.writeOpenAIError(w, "All OpenAI image channels failed", "api_error", http.StatusBadGateway)
 }
 
 // dispatchStream is the streaming variant. A channel either fails before any
@@ -242,8 +290,14 @@ func (h *OpenAIHandler) dispatchStream(
 	rw := &responseWriter{ResponseWriter: w, flusher: flusher}
 
 	var lastErr error
+	var lastChannel string
+	var totalLatency int64
+	requestIP := extractClientIP(r)
+	model := extractModelFromBody(bodyBytes)
+	
 	for _, ch := range candidates {
 		chLog := slog.With("channel", ch.Name(), "endpoint", endpoint)
+		lastChannel = ch.Name()
 
 		rawStream, ok := ch.(core.OpenAIRawStreamGenerator)
 		if !ok {
@@ -254,6 +308,7 @@ func (h *OpenAIHandler) dispatchStream(
 		start := time.Now()
 		err := rawStream.StreamOpenAIRaw(ctx, contentType, bodyBytes, endpoint, rw)
 		latencyMs := time.Since(start).Milliseconds()
+		totalLatency += latencyMs
 
 		if ctx.Err() != nil {
 			chLog.Info("request cancelled by client, not recording failure")
@@ -262,15 +317,19 @@ func (h *OpenAIHandler) dispatchStream(
 
 		if err == nil {
 			h.router.RecordResult(ch.Name(), true, latencyMs)
+			// 最终成功 - 记录使用日志并更新统计
+			h.logUsage(ctx, ch.Name(), model, true, http.StatusOK, "", totalLatency, requestIP, true)
 			return
 		}
 
 		// Pre-commit upstream non-2xx. Decide: propagate directly (4xx client
 		// fault) or fall back (5xx/429/408/401).
-		var statusErr *gptimage.UpstreamStatusError
+		var statusErr *openai_original.UpstreamStatusError
 		if errors.As(err, &statusErr) {
 			if shouldFallbackOnStatus(statusErr.Status) {
 				h.router.RecordResult(ch.Name(), false, latencyMs)
+				// 中间渠道失败（retriable status）- 记录日志但不更新统计
+				h.logUsage(ctx, ch.Name(), model, false, statusErr.Status, http.StatusText(statusErr.Status), latencyMs, requestIP, false)
 				chLog.Warn("upstream retriable status, trying next", "status", statusErr.Status)
 				lastErr = err
 				continue
@@ -280,17 +339,32 @@ func (h *OpenAIHandler) dispatchStream(
 				Status: statusErr.Status, Headers: statusErr.Headers, Body: statusErr.Body,
 			})
 			h.router.RecordResult(ch.Name(), true, latencyMs)
+			// 最终响应（可能是 4xx 客户端错误）- 记录使用日志并更新统计
+			isSuccess := statusErr.Status >= 200 && statusErr.Status < 300
+			h.logUsage(ctx, ch.Name(), model, isSuccess, statusErr.Status, "", totalLatency, requestIP, true)
 			return
 		}
 
 		// Transport-level failure.
 		h.router.RecordResult(ch.Name(), false, latencyMs)
+		// 中间渠道失败（transport error）- 记录日志但不更新统计
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		h.logUsage(ctx, ch.Name(), model, false, 0, errMsg, latencyMs, requestIP, false)
 		chLog.Warn("channel stream failed, trying next", "err", err)
 		lastErr = err
 	}
 
-	slog.Error("all gpt-image streaming channels failed", "endpoint", endpoint, "lastErr", lastErr)
-	h.writeOpenAIError(w, "All gpt-image channels failed", "api_error", http.StatusBadGateway)
+	// 所有渠道都失败 - 记录使用日志并更新统计
+	slog.Error("all OpenAI image streaming channels failed", "endpoint", endpoint, "lastErr", lastErr)
+	errMsg := "all OpenAI image channels failed"
+	if lastErr != nil {
+		errMsg = lastErr.Error()
+	}
+	h.logUsage(ctx, lastChannel, model, false, http.StatusBadGateway, errMsg, totalLatency, requestIP, true)
+	h.writeOpenAIError(w, "All OpenAI image channels failed", "api_error", http.StatusBadGateway)
 }
 
 // writeRawResponse writes status, whitelisted headers, and body to the client.
@@ -310,12 +384,12 @@ func (h *OpenAIHandler) writeRawResponse(w http.ResponseWriter, resp *core.OpenA
 	_, _ = w.Write(resp.Body)
 }
 
-// handleListModels lists configured gpt-image channels as "models".
+// handleListModels lists configured OpenAI image channels as "models".
 // NOTE: Clients that use the returned "id" values directly in subsequent
 // requests will NOT get a valid OpenAI model name — this endpoint exists
 // for inventory/observability, not SDK model discovery.
 func (h *OpenAIHandler) handleListModels(w http.ResponseWriter, r *http.Request) {
-	filter := &core.ChannelTypeFilter{Include: []string{"gpt-image"}}
+	filter := &core.ChannelTypeFilter{Include: []string{"openai_original", "openai_callback"}}
 	candidates, _ := h.router.RouteWithTypeFilter(r.Context(), filter)
 
 	models := make([]map[string]any, 0, len(candidates))
@@ -324,7 +398,7 @@ func (h *OpenAIHandler) handleListModels(w http.ResponseWriter, r *http.Request)
 			"id":       ch.Name(),
 			"object":   "model",
 			"created":  time.Now().Unix(),
-			"owned_by": "gpt-image",
+			"owned_by": "openai",
 		})
 	}
 
@@ -396,3 +470,88 @@ type responseWriter struct {
 }
 
 func (rw *responseWriter) Flush() { rw.flusher.Flush() }
+
+// extractClientIP 从请求中提取客户端 IP
+func extractClientIP(r *http.Request) string {
+	// 检查 X-Forwarded-For 头
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// 取第一个 IP
+		if idx := strings.Index(xff, ","); idx > 0 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	
+	// 检查 X-Real-IP 头
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
+	}
+	
+	// 使用 RemoteAddr
+	if idx := strings.LastIndex(r.RemoteAddr, ":"); idx > 0 {
+		return r.RemoteAddr[:idx]
+	}
+	return r.RemoteAddr
+}
+
+// extractModelFromBody 从请求体中提取模型名称
+func extractModelFromBody(bodyBytes []byte) string {
+	var body map[string]any
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		return "unknown"
+	}
+	if model, ok := body["model"].(string); ok {
+		return model
+	}
+	return "unknown"
+}
+
+// logUsage 记录 API Key 使用情况
+// updateStats 为 true 时更新 TotalSuccess/TotalFail，false 时只记录日志不更新统计
+func (h *OpenAIHandler) logUsage(ctx context.Context, channelName, model string, success bool, statusCode int, errorMsg string, latencyMs int64, requestIP string, updateStats bool) {
+	if h.usageLogger == nil {
+		return
+	}
+	
+	// 从 context 获取 API Key ID
+	apiKeyID, ok := middleware.GetAPIKeyID(ctx)
+	if !ok {
+		// 可能是使用 JWT 认证的请求，不记录
+		return
+	}
+	
+	var errMsg *string
+	if errorMsg != "" {
+		errMsg = &errorMsg
+	}
+	
+	var status *int
+	if statusCode > 0 {
+		status = &statusCode
+	}
+	
+	var latency *int
+	if latencyMs > 0 {
+		latencyInt := int(latencyMs)
+		latency = &latencyInt
+	}
+	
+	var ip *string
+	if requestIP != "" {
+		ip = &requestIP
+	}
+	
+	entry := database.LogEntry{
+		APIKeyID:     apiKeyID,
+		ChannelName:  channelName,
+		Model:        model,
+		Success:      success,
+		StatusCode:   status,
+		ErrorMessage: errMsg,
+		LatencyMs:    latency,
+		RequestIP:    ip,
+		UpdateStats:  updateStats, // 是否更新统计
+	}
+	
+	h.usageLogger.Log(entry)
+}

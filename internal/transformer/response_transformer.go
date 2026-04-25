@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/semaphore"
 	"goloop/internal/model"
@@ -51,7 +53,15 @@ func (t *ResponseTransformer) ToGoogleResponse(ctx context.Context, resultURLs [
 		wg.Add(1)
 		go func(idx int, u string) {
 			defer wg.Done()
+			slog.Debug("response_transformer: downloading image", "idx", idx, "url", u)
+			start := time.Now()
 			data, err := t.store.DownloadToBytes(ctx, u)
+			elapsed := time.Since(start)
+			if err != nil {
+				slog.Error("response_transformer: download failed", "idx", idx, "url", u, "elapsed", elapsed, "err", err)
+			} else {
+				slog.Debug("response_transformer: download succeeded", "idx", idx, "size", len(data), "elapsed", elapsed)
+			}
 			ch <- result{idx: idx, data: data, err: err}
 		}(i, url)
 	}
@@ -123,7 +133,15 @@ func (t *ResponseTransformer) ToGoogleStreamingResponse(ctx context.Context, res
 			}
 			defer t.downloadSem.Release(1)
 			
+			slog.Debug("response_transformer: downloading image (streaming)", "idx", idx, "url", u)
+			start := time.Now()
 			data, err := t.store.DownloadToBytes(ctx, u)
+			elapsed := time.Since(start)
+			if err != nil {
+				slog.Error("response_transformer: download failed (streaming)", "idx", idx, "url", u, "elapsed", elapsed, "err", err)
+			} else {
+				slog.Debug("response_transformer: download succeeded (streaming)", "idx", idx, "size", len(data), "elapsed", elapsed)
+			}
 			ch <- result{idx: idx, data: data, err: err}
 		}(i, url)
 	}

@@ -1,0 +1,22 @@
+{"time":"2026-04-24T23:47:57.97075+08:00","level":"INFO","msg":"database connected and migrated successfully"}
+{"time":"2026-04-24T23:47:57.970877+08:00","level":"INFO","msg":"checking database schema..."}
+{"time":"2026-04-24T23:47:57.970882+08:00","level":"INFO","msg":"initializing database schema..."}
+{"time":"2026-04-24T23:47:58.00387+08:00","level":"INFO","msg":"database schema initialized successfully"}
+{"time":"2026-04-24T23:47:58.005984+08:00","level":"INFO","msg":"database statistics","channels":1,"accounts":1,"model_mappings":0,"api_keys":1,"usage_logs":11}
+{"time":"2026-04-24T23:47:58.006023+08:00","level":"WARN","msg":"Redis is disabled - API Key validation will be slow and less reliable"}
+{"time":"2026-04-24T23:47:58.007092+08:00","level":"INFO","msg":"config loaded","channels":1}
+{"time":"2026-04-24T23:47:58.0073+08:00","level":"INFO","msg":"creating gemini_callback channel","baseURL":"https://api.kie.ai","weight":30,"timeout":6000000000000,"retryAttempts":3}
+{"time":"2026-04-24T23:47:58.00734+08:00","level":"INFO","msg":"channel registered","name":"kie","type":"gemini_callback","accounts":1}
+{"time":"2026-04-24T23:47:58.007442+08:00","level":"INFO","msg":"task manager started","workers":20}
+{"time":"2026-04-24T23:47:58.007533+08:00","level":"INFO","msg":"healthReaper started","interval":30000000000}
+{"time":"2026-04-24T23:47:58.007497+08:00","level":"INFO","msg":"storage: cleanup worker started","interval":3600000000000,"maxAge":86400000000000}
+{"time":"2026-04-24T23:47:58.007961+08:00","level":"INFO","msg":"server starting","port":8080}
+{"time":"2026-04-25T11:02:18.535293+08:00","level":"INFO","msg":"request received","requestId":"94d523772516df51","googleModel":"gemini-3.1-flash-image-preview","method":"POST","path":"/v1beta/models/gemini-3.1-flash-image-preview:generateContent","model":"gemini-3.1-flash-image-preview","auth":"Bearer g...5e34","contentType":"application/json","contentsCount":1}
+{"time":"2026-04-25T11:02:18.535771+08:00","level":"INFO","msg":"submitTask: creating job","channel":"kieai","model":"gemini-3.1-flash-image-preview","bodyLen":147}
+{"time":"2026-04-25T11:02:19.621671+08:00","level":"INFO","msg":"submitTask: task created successfully","channel":"kieai","model":"gemini-3.1-flash-image-preview","taskId":"e8fd09f85f088e0636e4b0b22ce0e745"}
+{"time":"2026-04-25T11:04:54.911778+08:00","level":"INFO","msg":"shutting down server..."}
+{"time":"2026-04-25T11:04:54.913199+08:00","level":"INFO","msg":"server stopped"}
+{"time":"2026-04-25T11:04:54.914032+08:00","level":"INFO","msg":"healthReaper stopped"}
+{"time":"2026-04-25T11:04:54.914449+08:00","level":"INFO","msg":"stopping task manager"}
+{"time":"2026-04-25T11:04:54.914679+08:00","level":"INFO","msg":"task manager stopped"}
+{"time":"2026-04-25T11:04:54.915011+08:00","level":"INFO","msg":"storage: cleanup worker stopped"}

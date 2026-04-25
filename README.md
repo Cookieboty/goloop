@@ -121,17 +121,17 @@ ok  goloop/internal/transformer  0.xxx s
 ```yaml
 server:
   port: 8080
-  read_timeout: 130s   # 需大于 KIE.AI 最长等待时间
-  write_timeout: 130s
+  read_timeout: 1300s   # 需大于 KIE.AI 最长等待时间
+  write_timeout: 1300s
 
 kieai:
   base_url: https://api.kie.ai
-  timeout: 120s
+  timeout: 1300s
 
 poller:
   initial_interval: 2s    # 首次轮询等待
   max_interval: 10s       # 最大轮询间隔（指数退避上限）
-  max_wait_time: 120s     # 总超时
+  max_wait_time: 1200s    # 总超时
   retry_attempts: 3       # 连续失败次数上限
 
 storage:
