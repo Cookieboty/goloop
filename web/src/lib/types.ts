@@ -97,6 +97,8 @@ export interface UsageLog {
   success: boolean;
   status_code?: number;
   error_message?: string;
+  endpoint?: string;
+  upstream_error?: string;
   latency_ms?: number;
   request_ip?: string;
   created_at: string;

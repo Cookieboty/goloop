@@ -34,10 +34,10 @@ func TestGoogleRequestUnmarshal(t *testing.T) {
 	if parts[0].Text != "draw a cat" {
 		t.Errorf("text mismatch: %q", parts[0].Text)
 	}
-	if parts[1].InlineData == nil || parts[1].InlineData.Data != "abc123" {
+	if parts[1].InlineDataAlt == nil || parts[1].InlineDataAlt.Data != "abc123" {
 		t.Errorf("inlineData mismatch")
 	}
-	if parts[2].FileData == nil || parts[2].FileData.FileURI != "https://example.com/img.jpg" {
+	if parts[2].FileDataAlt == nil || parts[2].FileDataAlt.FileURIAlt != "https://example.com/img.jpg" {
 		t.Errorf("fileData mismatch")
 	}
 	if req.GenerationConfig == nil || req.GenerationConfig.ImageConfig == nil {

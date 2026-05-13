@@ -9,7 +9,7 @@ import (
 	"os"
 	"testing"
 
-	"goloop/internal/config"
+	"goloop/internal/core"
 	"goloop/internal/model"
 	"goloop/internal/storage"
 )
@@ -26,18 +26,13 @@ func newTestStore(t *testing.T) *storage.Store {
 	return store
 }
 
-var testModelMapping = map[string]config.ModelDefaults{
-	"gemini-3.1-flash-image-preview": {
-		KieAIModel: "nano-banana-2", AspectRatio: "1:1", Resolution: "1K", OutputFormat: "png",
-	},
-	"gemini-3-pro-image-preview": {
-		KieAIModel: "nano-banana-pro", AspectRatio: "1:1", Resolution: "1K", OutputFormat: "png",
-	},
+func newTestConfigManager() *core.ConfigManager {
+	return core.NewConfigManager(nil)
 }
 
 func TestTransform_TextOnly(t *testing.T) {
 	store := newTestStore(t)
-	tr := NewRequestTransformer(store, testModelMapping, 0)
+	tr := NewRequestTransformer(store, newTestConfigManager(), 0)
 
 	req := &model.GoogleRequest{
 		Contents: []model.Content{
@@ -45,7 +40,7 @@ func TestTransform_TextOnly(t *testing.T) {
 		},
 	}
 
-	result, err := tr.Transform(context.Background(), req, "gemini-3.1-flash-image-preview")
+	result, err := tr.Transform(context.Background(), req, "gemini-3.1-flash-image-preview", "test-channel")
 	if err != nil {
 		t.Fatalf("Transform error: %v", err)
 	}
@@ -62,7 +57,7 @@ func TestTransform_TextOnly(t *testing.T) {
 
 func TestTransform_ImageConfigOverride(t *testing.T) {
 	store := newTestStore(t)
-	tr := NewRequestTransformer(store, testModelMapping, 0)
+	tr := NewRequestTransformer(store, newTestConfigManager(), 0)
 
 	req := &model.GoogleRequest{
 		Contents: []model.Content{
@@ -73,7 +68,7 @@ func TestTransform_ImageConfigOverride(t *testing.T) {
 		},
 	}
 
-	result, err := tr.Transform(context.Background(), req, "gemini-3.1-flash-image-preview")
+	result, err := tr.Transform(context.Background(), req, "gemini-3.1-flash-image-preview", "test-channel")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +78,6 @@ func TestTransform_ImageConfigOverride(t *testing.T) {
 	if result.Input.Resolution != "2K" {
 		t.Errorf("override resolution: got %q", result.Input.Resolution)
 	}
-	// output_format not overridden, use default
 	if result.Input.OutputFormat != "png" {
 		t.Errorf("default output_format: got %q", result.Input.OutputFormat)
 	}
@@ -91,7 +85,7 @@ func TestTransform_ImageConfigOverride(t *testing.T) {
 
 func TestTransform_InlineData(t *testing.T) {
 	store := newTestStore(t)
-	tr := NewRequestTransformer(store, testModelMapping, 0)
+	tr := NewRequestTransformer(store, newTestConfigManager(), 0)
 
 	imgBytes := []byte("fake-png-content")
 	b64 := base64.StdEncoding.EncodeToString(imgBytes)
@@ -105,7 +99,7 @@ func TestTransform_InlineData(t *testing.T) {
 		},
 	}
 
-	result, err := tr.Transform(context.Background(), req, "gemini-3.1-flash-image-preview")
+	result, err := tr.Transform(context.Background(), req, "gemini-3.1-flash-image-preview", "test-channel")
 	if err != nil {
 		t.Fatalf("Transform error: %v", err)
 	}
@@ -121,7 +115,7 @@ func TestTransform_InlineData(t *testing.T) {
 
 func TestTransform_FileData(t *testing.T) {
 	store := newTestStore(t)
-	tr := NewRequestTransformer(store, testModelMapping, 0)
+	tr := NewRequestTransformer(store, newTestConfigManager(), 0)
 
 	req := &model.GoogleRequest{
 		Contents: []model.Content{
@@ -131,7 +125,7 @@ func TestTransform_FileData(t *testing.T) {
 		},
 	}
 
-	result, err := tr.Transform(context.Background(), req, "gemini-3.1-flash-image-preview")
+	result, err := tr.Transform(context.Background(), req, "gemini-3.1-flash-image-preview", "test-channel")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,16 +136,19 @@ func TestTransform_FileData(t *testing.T) {
 
 func TestTransform_UnknownModel(t *testing.T) {
 	store := newTestStore(t)
-	tr := NewRequestTransformer(store, testModelMapping, 0)
-	_, err := tr.Transform(context.Background(), &model.GoogleRequest{}, "unknown-model")
-	if err == nil {
-		t.Error("expected error for unknown model")
+	tr := NewRequestTransformer(store, newTestConfigManager(), 0)
+	result, err := tr.Transform(context.Background(), &model.GoogleRequest{}, "unknown-model", "test-channel")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Model != "unknown-model" {
+		t.Errorf("expected pass-through model name, got %q", result.Model)
 	}
 }
 
 func TestTransform_PromptTooLong(t *testing.T) {
 	store := newTestStore(t)
-	tr := NewRequestTransformer(store, testModelMapping, 0)
+	tr := NewRequestTransformer(store, newTestConfigManager(), 0)
 
 	longText := make([]byte, maxPromptLen+1)
 	for i := range longText {
@@ -163,23 +160,8 @@ func TestTransform_PromptTooLong(t *testing.T) {
 			{Parts: []model.Part{{Text: string(longText)}}},
 		},
 	}
-	_, err := tr.Transform(context.Background(), req, "gemini-3.1-flash-image-preview")
+	_, err := tr.Transform(context.Background(), req, "gemini-3.1-flash-image-preview", "test-channel")
 	if err == nil {
 		t.Error("expected error for prompt too long")
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) &&
-		(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
-			findSubstring(s, substr)))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

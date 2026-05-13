@@ -250,15 +250,17 @@ func (r *Repository) ToggleAPIKey(id uint, enabled bool) error {
 
 // LogEntry 使用日志条目（用于批量插入）
 type LogEntry struct {
-	APIKeyID     uint
-	ChannelName  string
-	Model        string
-	Success      bool
-	StatusCode   *int
-	ErrorMessage *string
-	LatencyMs    *int
-	RequestIP    *string
-	UpdateStats  bool // 是否更新 API Key 的统计数据（TotalSuccess/TotalFail）
+	APIKeyID      uint
+	ChannelName   string
+	Model         string
+	Success       bool
+	StatusCode    *int
+	ErrorMessage  *string
+	Endpoint      *string
+	UpstreamError *string
+	LatencyMs     *int
+	RequestIP     *string
+	UpdateStats   bool // 是否更新 API Key 的统计数据（TotalSuccess/TotalFail）
 }
 
 // BatchInsertUsageLogs 批量插入使用日志
@@ -270,16 +272,18 @@ func (r *Repository) BatchInsertUsageLogs(entries []LogEntry) error {
 	logs := make([]UsageLog, len(entries))
 	for i, entry := range entries {
 		logs[i] = UsageLog{
-			APIKeyID:     entry.APIKeyID,
-			ChannelName:  entry.ChannelName,
-			Model:        entry.Model,
-			Success:      entry.Success,
-			StatusCode:   entry.StatusCode,
-			ErrorMessage: entry.ErrorMessage,
-			LatencyMs:    entry.LatencyMs,
-			RequestIP:    entry.RequestIP,
-			ShouldCount:  entry.UpdateStats,
-			CreatedAt:    time.Now(),
+			APIKeyID:      entry.APIKeyID,
+			ChannelName:   entry.ChannelName,
+			Model:         entry.Model,
+			Success:       entry.Success,
+			StatusCode:    entry.StatusCode,
+			ErrorMessage:  entry.ErrorMessage,
+			Endpoint:      entry.Endpoint,
+			UpstreamError: entry.UpstreamError,
+			LatencyMs:     entry.LatencyMs,
+			RequestIP:     entry.RequestIP,
+			ShouldCount:   entry.UpdateStats,
+			CreatedAt:     time.Now(),
 		}
 	}
 	
@@ -498,7 +502,8 @@ func (r *Repository) GetGlobalStats() (*ChannelTypeStats, []ChannelDetailStats, 
 	}
 	
 	// 2. 查询今日统计（只统计最终结果）
-	today := time.Now().Truncate(24 * time.Hour)
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	var todayResult struct {
 		TotalRequests int64
 		TotalSuccess  int64

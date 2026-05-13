@@ -1,11 +1,15 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
@@ -189,8 +193,7 @@ func (h *OpenAIHandler) dispatchNonStream(
 	var totalLatency int64
 	requestIP := extractClientIP(r)
 	
-	// 从请求体中提取 model（如果可能）
-	model := extractModelFromBody(bodyBytes)
+	model := extractModelFromBody(bodyBytes, contentType)
 
 	for _, ch := range candidates {
 		chLog := slog.With("channel", ch.Name(), "endpoint", endpoint)
@@ -232,12 +235,8 @@ func (h *OpenAIHandler) dispatchNonStream(
 
 		if err != nil {
 			h.router.RecordResult(ch.Name(), false, latencyMs)
-			// 中间渠道失败 - 记录日志但不更新统计
-			errMsg := ""
-			if err != nil {
-				errMsg = err.Error()
-			}
-			h.logUsage(ctx, ch.Name(), model, false, 0, errMsg, latencyMs, requestIP, false)
+			errMsg := err.Error()
+			h.logUsage(ctx, ch.Name(), model, false, 0, errMsg, latencyMs, requestIP, false, endpoint, "")
 			chLog.Warn("channel transport error, trying next", "err", err)
 			lastErr = err
 			continue
@@ -246,8 +245,7 @@ func (h *OpenAIHandler) dispatchNonStream(
 		// Upstream returned — decide whether to fall back.
 		if shouldFallbackOnStatus(resp.Status) {
 			h.router.RecordResult(ch.Name(), false, latencyMs)
-			// 中间渠道失败（retriable status）- 记录日志但不更新统计
-			h.logUsage(ctx, ch.Name(), model, false, resp.Status, http.StatusText(resp.Status), latencyMs, requestIP, false)
+			h.logUsage(ctx, ch.Name(), model, false, resp.Status, statusTextFallback(resp.Status), latencyMs, requestIP, false, endpoint, truncateBody(resp.Body))
 			chLog.Warn("channel returned retriable status, trying next", "status", resp.Status)
 			lastErr = statusError(resp.Status)
 			continue
@@ -255,22 +253,19 @@ func (h *OpenAIHandler) dispatchNonStream(
 
 		// Propagate verbatim.
 		h.writeRawResponse(w, resp)
-		// 2xx → success; 4xx client-fault → also record as "success" for
-		// health purposes (the channel is working; the client sent a bad request).
 		h.router.RecordResult(ch.Name(), true, latencyMs)
-		// 最终成功/响应 - 记录使用日志并更新统计
 		isSuccess := resp.Status >= 200 && resp.Status < 300
-		h.logUsage(ctx, ch.Name(), model, isSuccess, resp.Status, "", totalLatency, requestIP, true)
+		h.logUsage(ctx, ch.Name(), model, isSuccess, resp.Status, "", totalLatency, requestIP, true, endpoint, "")
 		return
 	}
 
-	// 所有渠道都失败 - 记录使用日志并更新统计
+	// 所有渠道都失败
 	slog.Error("all OpenAI image channels failed", "endpoint", endpoint, "lastErr", lastErr)
 	errMsg := "all OpenAI image channels failed"
 	if lastErr != nil {
 		errMsg = lastErr.Error()
 	}
-	h.logUsage(ctx, lastChannel, model, false, http.StatusBadGateway, errMsg, totalLatency, requestIP, true)
+	h.logUsage(ctx, lastChannel, model, false, http.StatusBadGateway, errMsg, totalLatency, requestIP, true, endpoint, "")
 	h.writeOpenAIError(w, "All OpenAI image channels failed", "api_error", http.StatusBadGateway)
 }
 
@@ -293,7 +288,7 @@ func (h *OpenAIHandler) dispatchStream(
 	var lastChannel string
 	var totalLatency int64
 	requestIP := extractClientIP(r)
-	model := extractModelFromBody(bodyBytes)
+	model := extractModelFromBody(bodyBytes, contentType)
 	
 	for _, ch := range candidates {
 		chLog := slog.With("channel", ch.Name(), "endpoint", endpoint)
@@ -317,53 +312,43 @@ func (h *OpenAIHandler) dispatchStream(
 
 		if err == nil {
 			h.router.RecordResult(ch.Name(), true, latencyMs)
-			// 最终成功 - 记录使用日志并更新统计
-			h.logUsage(ctx, ch.Name(), model, true, http.StatusOK, "", totalLatency, requestIP, true)
+			h.logUsage(ctx, ch.Name(), model, true, http.StatusOK, "", totalLatency, requestIP, true, endpoint, "")
 			return
 		}
 
-		// Pre-commit upstream non-2xx. Decide: propagate directly (4xx client
-		// fault) or fall back (5xx/429/408/401).
 		var statusErr *openai_original.UpstreamStatusError
 		if errors.As(err, &statusErr) {
 			if shouldFallbackOnStatus(statusErr.Status) {
 				h.router.RecordResult(ch.Name(), false, latencyMs)
-				// 中间渠道失败（retriable status）- 记录日志但不更新统计
-				h.logUsage(ctx, ch.Name(), model, false, statusErr.Status, http.StatusText(statusErr.Status), latencyMs, requestIP, false)
+				h.logUsage(ctx, ch.Name(), model, false, statusErr.Status, statusTextFallback(statusErr.Status), latencyMs, requestIP, false, endpoint, truncateBody(statusErr.Body))
 				chLog.Warn("upstream retriable status, trying next", "status", statusErr.Status)
 				lastErr = err
 				continue
 			}
-			// Client-fault status — propagate verbatim. Channel is healthy.
+			// Client-fault status — propagate verbatim.
 			h.writeRawResponse(w, &core.OpenAIRawResponse{
 				Status: statusErr.Status, Headers: statusErr.Headers, Body: statusErr.Body,
 			})
 			h.router.RecordResult(ch.Name(), true, latencyMs)
-			// 最终响应（可能是 4xx 客户端错误）- 记录使用日志并更新统计
 			isSuccess := statusErr.Status >= 200 && statusErr.Status < 300
-			h.logUsage(ctx, ch.Name(), model, isSuccess, statusErr.Status, "", totalLatency, requestIP, true)
+			h.logUsage(ctx, ch.Name(), model, isSuccess, statusErr.Status, "", totalLatency, requestIP, true, endpoint, "")
 			return
 		}
 
 		// Transport-level failure.
 		h.router.RecordResult(ch.Name(), false, latencyMs)
-		// 中间渠道失败（transport error）- 记录日志但不更新统计
-		errMsg := ""
-		if err != nil {
-			errMsg = err.Error()
-		}
-		h.logUsage(ctx, ch.Name(), model, false, 0, errMsg, latencyMs, requestIP, false)
+		errMsg := err.Error()
+		h.logUsage(ctx, ch.Name(), model, false, 0, errMsg, latencyMs, requestIP, false, endpoint, "")
 		chLog.Warn("channel stream failed, trying next", "err", err)
 		lastErr = err
 	}
 
-	// 所有渠道都失败 - 记录使用日志并更新统计
 	slog.Error("all OpenAI image streaming channels failed", "endpoint", endpoint, "lastErr", lastErr)
 	errMsg := "all OpenAI image channels failed"
 	if lastErr != nil {
 		errMsg = lastErr.Error()
 	}
-	h.logUsage(ctx, lastChannel, model, false, http.StatusBadGateway, errMsg, totalLatency, requestIP, true)
+	h.logUsage(ctx, lastChannel, model, false, http.StatusBadGateway, errMsg, totalLatency, requestIP, true, endpoint, "")
 	h.writeOpenAIError(w, "All OpenAI image channels failed", "api_error", http.StatusBadGateway)
 }
 
@@ -494,8 +479,34 @@ func extractClientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// extractModelFromBody 从请求体中提取模型名称
-func extractModelFromBody(bodyBytes []byte) string {
+// extractModelFromBody 从请求体中提取模型名称。
+// 支持 JSON 和 multipart/form-data 两种格式。
+func extractModelFromBody(bodyBytes []byte, contentType string) string {
+	mediaType, params, _ := mime.ParseMediaType(contentType)
+	if mediaType == "multipart/form-data" {
+		boundary := params["boundary"]
+		if boundary == "" {
+			return "unknown"
+		}
+		mr := multipart.NewReader(bytes.NewReader(bodyBytes), boundary)
+		for {
+			part, err := mr.NextPart()
+			if err != nil {
+				break
+			}
+			if part.FormName() == "model" {
+				val, err := io.ReadAll(io.LimitReader(part, 256))
+				part.Close()
+				if err == nil && len(val) > 0 {
+					return string(val)
+				}
+				break
+			}
+			part.Close()
+		}
+		return "unknown"
+	}
+
 	var body map[string]any
 	if err := json.Unmarshal(bodyBytes, &body); err != nil {
 		return "unknown"
@@ -506,17 +517,38 @@ func extractModelFromBody(bodyBytes []byte) string {
 	return "unknown"
 }
 
+// statusTextFallback returns http.StatusText for standard codes,
+// or "HTTP <code>" for non-standard codes (e.g. Cloudflare 524).
+func statusTextFallback(code int) string {
+	if text := http.StatusText(code); text != "" {
+		return text
+	}
+	return fmt.Sprintf("HTTP %d", code)
+}
+
+const maxUpstreamErrorBytes = 512
+
+// truncateBody returns the first maxUpstreamErrorBytes bytes of body as a string
+// for diagnostic logging. Returns empty string for nil/empty input.
+func truncateBody(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	if len(body) > maxUpstreamErrorBytes {
+		return string(body[:maxUpstreamErrorBytes])
+	}
+	return string(body)
+}
+
 // logUsage 记录 API Key 使用情况
 // updateStats 为 true 时更新 TotalSuccess/TotalFail，false 时只记录日志不更新统计
-func (h *OpenAIHandler) logUsage(ctx context.Context, channelName, model string, success bool, statusCode int, errorMsg string, latencyMs int64, requestIP string, updateStats bool) {
+func (h *OpenAIHandler) logUsage(ctx context.Context, channelName, model string, success bool, statusCode int, errorMsg string, latencyMs int64, requestIP string, updateStats bool, endpoint string, upstreamError string) {
 	if h.usageLogger == nil {
 		return
 	}
 	
-	// 从 context 获取 API Key ID
 	apiKeyID, ok := middleware.GetAPIKeyID(ctx)
 	if !ok {
-		// 可能是使用 JWT 认证的请求，不记录
 		return
 	}
 	
@@ -541,16 +573,28 @@ func (h *OpenAIHandler) logUsage(ctx context.Context, channelName, model string,
 		ip = &requestIP
 	}
 	
+	var ep *string
+	if endpoint != "" {
+		ep = &endpoint
+	}
+	
+	var ue *string
+	if upstreamError != "" {
+		ue = &upstreamError
+	}
+	
 	entry := database.LogEntry{
-		APIKeyID:     apiKeyID,
-		ChannelName:  channelName,
-		Model:        model,
-		Success:      success,
-		StatusCode:   status,
-		ErrorMessage: errMsg,
-		LatencyMs:    latency,
-		RequestIP:    ip,
-		UpdateStats:  updateStats, // 是否更新统计
+		APIKeyID:      apiKeyID,
+		ChannelName:   channelName,
+		Model:         model,
+		Success:       success,
+		StatusCode:    status,
+		ErrorMessage:  errMsg,
+		Endpoint:      ep,
+		UpstreamError: ue,
+		LatencyMs:     latency,
+		RequestIP:     ip,
+		UpdateStats:   updateStats,
 	}
 	
 	h.usageLogger.Log(entry)

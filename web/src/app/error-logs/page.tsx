@@ -582,6 +582,12 @@ export default function ErrorLogsPage() {
                     <p className="text-xs text-gray-500 mb-2">延迟时间</p>
                     <p className="text-sm text-white">{selectedLog.latency_ms ? `${selectedLog.latency_ms}ms` : "-"}</p>
                   </div>
+                  {selectedLog.endpoint && (
+                    <div className="p-4 rounded-lg bg-gray-800/50 border border-gray-700/50 col-span-2">
+                      <p className="text-xs text-gray-500 mb-2">Endpoint</p>
+                      <p className="text-sm text-white font-mono">{selectedLog.endpoint}</p>
+                    </div>
+                  )}
                 </div>
 
                 {/* Error Message */}
@@ -602,6 +608,18 @@ export default function ErrorLogsPage() {
                     <div className="p-4 bg-gray-950/80 rounded-lg border border-red-500/20">
                       <p className="text-sm text-red-300 font-mono whitespace-pre-wrap break-all leading-relaxed">
                         {selectedLog.error_message}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Upstream Error */}
+                {selectedLog.upstream_error && (
+                  <div>
+                    <h3 className="text-sm font-semibold text-white mb-3">上游错误响应</h3>
+                    <div className="p-4 bg-gray-950/80 rounded-lg border border-orange-500/20">
+                      <p className="text-sm text-orange-300 font-mono whitespace-pre-wrap break-all leading-relaxed">
+                        {selectedLog.upstream_error}
                       </p>
                     </div>
                   </div>

@@ -5,9 +5,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
-
-	"goloop/internal/core"
 )
 
 func TestHandleHealth(t *testing.T) {
@@ -24,17 +21,15 @@ func TestHandleHealth(t *testing.T) {
 	}
 }
 
-func TestMissingJWT_Returns401(t *testing.T) {
-	mux := http.NewServeMux()
-	h := &GeminiHandler{issuer: core.NewJWTIssuer("secret", time.Hour)}
-	protected := core.NewJWTMiddleware(h.issuer, h.handleProtected)
-	mux.Handle("POST /v1beta/models/", protected)
+func TestMissingAPIKey_Returns401(t *testing.T) {
+	h := &GeminiHandler{}
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/v1beta/models/gemini-3.1-flash-image-preview:generateContent",
 		strings.NewReader(`{"contents":[]}`))
 	req.Header.Set("Content-Type", "application/json")
-	mux.ServeHTTP(w, req)
+
+	h.handleGenerateContent(w, req)
 
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", w.Code)

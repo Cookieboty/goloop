@@ -181,8 +181,8 @@ func TestProbe(t *testing.T) {
 
 func TestChannelType(t *testing.T) {
 	ch := newTestChannel(t, "https://api.example.com")
-	if ch.Type() != "gpt-image" {
-		t.Errorf("type = %q, want gpt-image", ch.Type())
+	if ch.Type() != "openai_original" {
+		t.Errorf("type = %q, want openai_original", ch.Type())
 	}
 }
 
