@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -186,11 +187,183 @@ func TestChannelType(t *testing.T) {
 	}
 }
 
+// --- Retry tests ---
+
+func testRetryConfig() Config {
+	return Config{
+		RetryStatusCodes: map[int]struct{}{403: {}, 502: {}, 524: {}},
+		RetryAttempts:    3,
+		RetryDelay:       1 * time.Millisecond,
+	}
+}
+
+func newRetryChannel(t *testing.T, baseURL string) *Channel {
+	t.Helper()
+	pool := core.NewDefaultAccountPool()
+	pool.AddAccount("test-api-key", 1)
+	return NewChannel("test-retry", baseURL, 10, pool, 5*time.Second, testRetryConfig())
+}
+
+func TestGenerateOpenAIRaw_RetryThenSuccess(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n <= 2 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("bad gateway"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	ch := newRetryChannel(t, upstream.URL)
+	resp, err := ch.GenerateOpenAIRaw(context.Background(), "", []byte(`{}`), "/v1/test")
+	if err != nil {
+		t.Fatalf("expected success after retries, got %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.Status)
+	}
+	if got := hits.Load(); got != 3 {
+		t.Errorf("expected 3 hits (2 retries + 1 success), got %d", got)
+	}
+}
+
+func TestGenerateOpenAIRaw_RetryExhausted(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("forbidden"))
+	}))
+	defer upstream.Close()
+
+	ch := newRetryChannel(t, upstream.URL)
+	resp, err := ch.GenerateOpenAIRaw(context.Background(), "", []byte(`{}`), "/v1/test")
+	if err != nil {
+		t.Fatalf("exhausted retries should not return error: %v", err)
+	}
+	if resp.Status != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.Status)
+	}
+	// 1 initial + 3 retries = 4
+	if got := hits.Load(); got != 4 {
+		t.Errorf("expected 4 hits (1 + 3 retries), got %d", got)
+	}
+}
+
+func TestGenerateOpenAIRaw_NonRetryableStatusNoRetry(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("bad request"))
+	}))
+	defer upstream.Close()
+
+	ch := newRetryChannel(t, upstream.URL)
+	resp, err := ch.GenerateOpenAIRaw(context.Background(), "", []byte(`{}`), "/v1/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.Status)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("400 should not retry; got %d hits", got)
+	}
+}
+
+func TestStreamOpenAIRaw_RetryThenSuccess(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n <= 2 {
+			w.WriteHeader(524)
+			_, _ = w.Write([]byte("timeout"))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	ch := newRetryChannel(t, upstream.URL)
+	recorder := httptest.NewRecorder()
+	rw := &mockResponseWriter{ResponseWriter: recorder}
+
+	err := ch.StreamOpenAIRaw(context.Background(), "", []byte(`{}`), "/v1/test", rw)
+	if err != nil {
+		t.Fatalf("expected success after retries, got %v", err)
+	}
+	if recorder.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", recorder.Code)
+	}
+	if got := hits.Load(); got != 3 {
+		t.Errorf("expected 3 hits, got %d", got)
+	}
+}
+
+func TestStreamOpenAIRaw_RetryExhausted(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("bad gateway"))
+	}))
+	defer upstream.Close()
+
+	ch := newRetryChannel(t, upstream.URL)
+	recorder := httptest.NewRecorder()
+	rw := &mockResponseWriter{ResponseWriter: recorder}
+
+	err := ch.StreamOpenAIRaw(context.Background(), "", []byte(`{}`), "/v1/test", rw)
+	if err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	var se *UpstreamStatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("expected *UpstreamStatusError, got %T: %v", err, err)
+	}
+	if se.Status != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", se.Status)
+	}
+	// 1 initial + 3 retries = 4
+	if got := hits.Load(); got != 4 {
+		t.Errorf("expected 4 hits, got %d", got)
+	}
+}
+
+func TestGenerateOpenAIRaw_NoRetryWhenConfigEmpty(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("bad gateway"))
+	}))
+	defer upstream.Close()
+
+	ch := newTestChannel(t, upstream.URL) // Config{} — no retry
+	resp, err := ch.GenerateOpenAIRaw(context.Background(), "", []byte(`{}`), "/v1/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Status != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", resp.Status)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("empty config should not retry; got %d hits", got)
+	}
+}
+
 func newTestChannel(t *testing.T, baseURL string) *Channel {
 	t.Helper()
 	pool := core.NewDefaultAccountPool()
 	pool.AddAccount("test-api-key", 1)
-	return NewChannel("test", baseURL, 10, pool, 5*time.Second)
+	return NewChannel("test", baseURL, 10, pool, 5*time.Second, Config{})
 }
 
 type mockResponseWriter struct {

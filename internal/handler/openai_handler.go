@@ -33,6 +33,7 @@ type OpenAIHandler struct {
 	configMgr           *core.ConfigManager
 	maxRequestBodyBytes int64
 	usageLogger         *core.UsageLogger
+	retryCodes          map[int]struct{}
 }
 
 func NewOpenAIHandler(
@@ -42,6 +43,7 @@ func NewOpenAIHandler(
 	configMgr *core.ConfigManager,
 	maxRequestBodyBytes int64,
 	usageLogger *core.UsageLogger,
+	retryCodes map[int]struct{},
 ) *OpenAIHandler {
 	if maxRequestBodyBytes <= 0 {
 		maxRequestBodyBytes = 50 * 1024 * 1024
@@ -53,6 +55,7 @@ func NewOpenAIHandler(
 		configMgr:           configMgr,
 		maxRequestBodyBytes: maxRequestBodyBytes,
 		usageLogger:         usageLogger,
+		retryCodes:          retryCodes,
 	}
 }
 
@@ -243,7 +246,7 @@ func (h *OpenAIHandler) dispatchNonStream(
 		}
 
 		// Upstream returned — decide whether to fall back.
-		if shouldFallbackOnStatus(resp.Status) {
+		if shouldFallbackOnStatus(resp.Status, h.retryCodes) {
 			h.router.RecordResult(ch.Name(), false, latencyMs)
 			h.logUsage(ctx, ch.Name(), model, false, resp.Status, statusTextFallback(resp.Status), latencyMs, requestIP, false, endpoint, truncateBody(resp.Body))
 			chLog.Warn("channel returned retriable status, trying next", "status", resp.Status)
@@ -318,7 +321,7 @@ func (h *OpenAIHandler) dispatchStream(
 
 		var statusErr *openai_original.UpstreamStatusError
 		if errors.As(err, &statusErr) {
-			if shouldFallbackOnStatus(statusErr.Status) {
+			if shouldFallbackOnStatus(statusErr.Status, h.retryCodes) {
 				h.router.RecordResult(ch.Name(), false, latencyMs)
 				h.logUsage(ctx, ch.Name(), model, false, statusErr.Status, statusTextFallback(statusErr.Status), latencyMs, requestIP, false, endpoint, truncateBody(statusErr.Body))
 				chLog.Warn("upstream retriable status, trying next", "status", statusErr.Status)
@@ -412,15 +415,20 @@ func clientContentType(r *http.Request) string {
 }
 
 // shouldFallbackOnStatus decides whether a non-2xx upstream status warrants
-// trying the next channel. 5xx/429/408/401 are channel-level issues; other
-// 4xx are client-fault and should be propagated as-is.
-func shouldFallbackOnStatus(status int) bool {
+// trying the next channel. 5xx/429/408/401 are always channel-level issues;
+// additionally, any status code in the retryCodes set triggers fallback.
+func shouldFallbackOnStatus(status int, retryCodes map[int]struct{}) bool {
 	if status >= 500 {
 		return true
 	}
 	switch status {
 	case http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusUnauthorized:
 		return true
+	}
+	if retryCodes != nil {
+		if _, ok := retryCodes[status]; ok {
+			return true
+		}
 	}
 	return false
 }

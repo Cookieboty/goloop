@@ -14,6 +14,7 @@ import (
 
 	"goloop/internal/admin"
 	"goloop/internal/cache"
+	"goloop/internal/channels/openai_original"
 	"goloop/internal/config"
 	"goloop/internal/core"
 	"goloop/internal/database"
@@ -105,8 +106,24 @@ func main() {
 	defer cancelCleanup()
 	go store.StartCleanupWorker(cleanupCtx, 1*time.Hour, 24*time.Hour)
 
+	// Build retry codes set from config for OpenAI channels.
+	retryCodes := make(map[int]struct{}, len(cfg.OpenAIRetry.StatusCodes))
+	for _, code := range cfg.OpenAIRetry.StatusCodes {
+		retryCodes[code] = struct{}{}
+	}
+	slog.Info("openai retry config",
+		"statusCodes", cfg.OpenAIRetry.StatusCodes,
+		"attempts", cfg.OpenAIRetry.Attempts,
+		"delay", cfg.OpenAIRetry.Delay)
+
+	openAIRetryCfg := openai_original.Config{
+		RetryStatusCodes: retryCodes,
+		RetryAttempts:    cfg.OpenAIRetry.Attempts,
+		RetryDelay:       cfg.OpenAIRetry.Delay,
+	}
+
 	// Bootstrap all configured channels from database
-	bootstrapper := NewChannelBootstrapper(registry, configMgr, store)
+	bootstrapper := NewChannelBootstrapper(registry, configMgr, store, openAIRetryCfg)
 	if err := bootstrapper.Bootstrap(); err != nil {
 		slog.Error("failed to bootstrap channels", "err", err)
 		os.Exit(1)
@@ -175,7 +192,7 @@ func main() {
 
 	// HTTP handlers
 	geminiHandler := handler.NewGeminiHandler(router, registry, issuer, store, taskManager, reqTransformer, respTransformer, cfg.Server.MaxRequestBodyBytes, usageLogger)
-	openaiHandler := handler.NewOpenAIHandler(router, registry, issuer, configMgr, cfg.Server.MaxRequestBodyBytes, usageLogger)
+	openaiHandler := handler.NewOpenAIHandler(router, registry, issuer, configMgr, cfg.Server.MaxRequestBodyBytes, usageLogger, retryCodes)
 	adminHandler := handler.NewAdminHandler(issuer, registry, health, cfg.AdminPassword, repo, redisClient, configMgr, bootstrapper)
 
 	// Business API routes (Gemini, OpenAI) - require API Key authentication

@@ -5,12 +5,20 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"goloop/internal/core"
 	"goloop/internal/model"
 )
+
+// Config holds retry settings for transient upstream errors.
+type Config struct {
+	RetryStatusCodes map[int]struct{}
+	RetryAttempts    int
+	RetryDelay       time.Duration
+}
 
 // Channel implements core.Channel, core.OpenAIRawGenerator, and
 // core.OpenAIRawStreamGenerator for OpenAI-compatible upstreams.
@@ -25,6 +33,7 @@ import (
 // No other files need to change.
 type Channel struct {
 	core.BaseChannel // provides Name/Type/Weight/IsAvailable/HealthScore/Admin/GetAccountPool
+	cfg              Config
 }
 
 // Compile-time assertions.
@@ -37,9 +46,10 @@ const maxResponseBytes = 64 << 20
 
 // NewChannel creates a gpt-image pass-through channel.
 // name is the unique channel identifier (e.g. "gpt-image-primary").
-func NewChannel(name, baseURL string, weight int, pool *core.DefaultAccountPool, timeout time.Duration) *Channel {
+func NewChannel(name, baseURL string, weight int, pool *core.DefaultAccountPool, timeout time.Duration, cfg Config) *Channel {
 	return &Channel{
 		BaseChannel: core.NewBaseChannel(name, "openai_original", baseURL, weight, pool, timeout),
+		cfg:         cfg,
 	}
 }
 
@@ -47,6 +57,9 @@ func NewChannel(name, baseURL string, weight int, pool *core.DefaultAccountPool,
 // returns the upstream status/headers/body unmodified. Non-2xx responses are returned
 // in the result (not as an error) so the handler can decide whether to fall back to
 // another channel or propagate the upstream error to the client directly.
+//
+// If the upstream returns a status in RetryStatusCodes, the request is retried
+// up to RetryAttempts times with RetryDelay between attempts.
 func (ch *Channel) GenerateOpenAIRaw(ctx context.Context, contentType string, rawBody []byte, endpoint string) (*core.OpenAIRawResponse, error) {
 	acc, err := ch.Pool.Select()
 	if err != nil {
@@ -54,8 +67,6 @@ func (ch *Channel) GenerateOpenAIRaw(ctx context.Context, contentType string, ra
 	}
 	acc.IncUsage()
 
-	// Success is recorded by the caller (handler) based on HTTP status;
-	// here we only release the account.
 	var success bool
 	defer func() { ch.Pool.Return(acc, success) }()
 
@@ -64,35 +75,59 @@ func (ch *Channel) GenerateOpenAIRaw(ctx context.Context, contentType string, ra
 	}
 
 	url := ch.BaseURL + endpoint
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawBody))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", contentType)
-	httpReq.Header.Set("Authorization", "Bearer "+acc.APIKey())
 
-	resp, err := ch.HTTPClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("gpt-image: HTTP request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	var lastStatus int
+	var lastHeaders http.Header
+	var lastBody []byte
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	if err != nil {
-		return nil, fmt.Errorf("gpt-image: read response: %w", err)
+	for attempt := 0; attempt <= ch.cfg.RetryAttempts; attempt++ {
+		if attempt > 0 {
+			slog.Warn("retrying on retriable status",
+				"channel", ch.Name(), "endpoint", endpoint,
+				"status", lastStatus, "attempt", attempt,
+				"maxRetries", ch.cfg.RetryAttempts)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(ch.cfg.RetryDelay):
+			}
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawBody))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", contentType)
+		httpReq.Header.Set("Authorization", "Bearer "+acc.APIKey())
+
+		resp, err := ch.HTTPClient.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("gpt-image: HTTP request failed: %w", err)
+		}
+
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("gpt-image: read response: %w", readErr)
+		}
+
+		lastStatus = resp.StatusCode
+		lastHeaders = resp.Header.Clone()
+		lastBody = data
+
+		if !ch.isRetryable(resp.StatusCode) {
+			break
+		}
 	}
 
-	// Treat 2xx as account success for pool accounting. Non-2xx (including
-	// 4xx that we propagate to the client) is left as failure here; the
-	// handler may also record router-level health via RecordResult.
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if lastStatus >= 200 && lastStatus < 300 {
 		success = true
 	}
 
 	return &core.OpenAIRawResponse{
-		Status:  resp.StatusCode,
-		Headers: resp.Header.Clone(),
-		Body:    data,
+		Status:  lastStatus,
+		Headers: lastHeaders,
+		Body:    lastBody,
 	}, nil
 }
 
@@ -101,6 +136,9 @@ func (ch *Channel) GenerateOpenAIRaw(ctx context.Context, contentType string, ra
 // contract: pre-commit errors (transport or non-2xx upstream) return an error so the
 // handler can fall back; post-commit errors are swallowed to avoid corrupting the
 // already-started client response.
+//
+// If the upstream returns a retriable status (pre-commit), the request is retried
+// up to RetryAttempts times with RetryDelay between attempts.
 func (ch *Channel) StreamOpenAIRaw(ctx context.Context, contentType string, rawBody []byte, endpoint string, w core.ResponseWriter) error {
 	acc, err := ch.Pool.Select()
 	if err != nil {
@@ -116,22 +154,49 @@ func (ch *Channel) StreamOpenAIRaw(ctx context.Context, contentType string, rawB
 	}
 
 	url := ch.BaseURL + endpoint
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawBody))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", contentType)
-	httpReq.Header.Set("Authorization", "Bearer "+acc.APIKey())
 
-	resp, err := ch.HTTPClient.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("gpt-image: HTTP request failed: %w", err)
+	// Pre-commit retry loop: retries only happen before any bytes reach the client.
+	var resp *http.Response
+	for attempt := 0; attempt <= ch.cfg.RetryAttempts; attempt++ {
+		if attempt > 0 {
+			slog.Warn("retrying on retriable status (stream)",
+				"channel", ch.Name(), "endpoint", endpoint,
+				"status", resp.StatusCode, "attempt", attempt,
+				"maxRetries", ch.cfg.RetryAttempts)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(ch.cfg.RetryDelay):
+			}
+		}
+
+		httpReq, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawBody))
+		if reqErr != nil {
+			return reqErr
+		}
+		httpReq.Header.Set("Content-Type", contentType)
+		httpReq.Header.Set("Authorization", "Bearer "+acc.APIKey())
+
+		resp, err = ch.HTTPClient.Do(httpReq)
+		if err != nil {
+			return fmt.Errorf("gpt-image: HTTP request failed: %w", err)
+		}
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			break
+		}
+
+		if !ch.isRetryable(resp.StatusCode) {
+			break
+		}
+
+		// Drain body before retry so the connection can be reused.
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		resp.Body.Close()
 	}
 	defer resp.Body.Close()
 
-	// Pre-commit error: non-2xx → let the handler fall back before any
-	// bytes reach the client. Include the upstream body so a UpstreamStatusError
-	// consumer can propagate it verbatim if fallback is not desired.
+	// Pre-commit error: non-2xx → let the handler fall back.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		return &UpstreamStatusError{
@@ -154,8 +219,6 @@ func (ch *Channel) StreamOpenAIRaw(ctx context.Context, contentType string, rawB
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-				// Client disconnected. Stop pumping but do not treat as
-				// channel failure.
 				success = true
 				return nil
 			}
@@ -166,12 +229,15 @@ func (ch *Channel) StreamOpenAIRaw(ctx context.Context, contentType string, rawB
 			return nil
 		}
 		if readErr != nil {
-			// Upstream closed unexpectedly mid-stream. Can't fall back
-			// after commit; the SSE connection simply ends.
 			success = true
 			return nil
 		}
 	}
+}
+
+func (ch *Channel) isRetryable(statusCode int) bool {
+	_, ok := ch.cfg.RetryStatusCodes[statusCode]
+	return ok && ch.cfg.RetryAttempts > 0
 }
 
 // UpstreamStatusError is returned by StreamOpenAIRaw when the upstream returns

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -14,8 +15,15 @@ type Config struct {
 	Health        HealthConfig
 	RateLimit     RateLimitConfig
 	Redis         RedisConfig
+	OpenAIRetry   OpenAIRetryConfig
 	AdminPassword string
 	DatabaseURL   string
+}
+
+type OpenAIRetryConfig struct {
+	StatusCodes []int
+	Attempts    int
+	Delay       time.Duration
 }
 
 type ServerConfig struct {
@@ -83,6 +91,24 @@ func getEnvInt(key string, fallback int) int {
 	return n
 }
 
+func getEnvIntSlice(key, fallback string) []int {
+	raw := getEnv(key, fallback)
+	parts := strings.Split(raw, ",")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
 func getEnvBool(key string, fallback bool) bool {
 	s := os.Getenv(key)
 	if s == "" {
@@ -148,6 +174,11 @@ func Load() (*Config, error) {
 		RateLimit: RateLimitConfig{
 			RPS:   float64(getEnvInt("RATELIMIT_RPS", 0)),
 			Burst: getEnvInt("RATELIMIT_BURST", 10),
+		},
+		OpenAIRetry: OpenAIRetryConfig{
+			StatusCodes: getEnvIntSlice("OPENAI_RETRY_STATUS_CODES", "403,502,524"),
+			Attempts:    getEnvInt("OPENAI_RETRY_ATTEMPTS", 5),
+			Delay:       getEnvDuration("OPENAI_RETRY_DELAY", "2s"),
 		},
 	}
 

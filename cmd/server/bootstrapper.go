@@ -15,17 +15,19 @@ import (
 
 // ChannelBootstrapper 负责从配置创建和注册通道
 type ChannelBootstrapper struct {
-	registry  *core.PluginRegistry
-	configMgr *core.ConfigManager
-	store     *storage.Store
+	registry       *core.PluginRegistry
+	configMgr      *core.ConfigManager
+	store          *storage.Store
+	openAIRetryCfg openai_original.Config
 }
 
 // NewChannelBootstrapper 创建通道引导服务
-func NewChannelBootstrapper(registry *core.PluginRegistry, configMgr *core.ConfigManager, store *storage.Store) *ChannelBootstrapper {
+func NewChannelBootstrapper(registry *core.PluginRegistry, configMgr *core.ConfigManager, store *storage.Store, openAIRetryCfg openai_original.Config) *ChannelBootstrapper {
 	return &ChannelBootstrapper{
-		registry:  registry,
-		configMgr: configMgr,
-		store:     store,
+		registry:       registry,
+		configMgr:      configMgr,
+		store:          store,
+		openAIRetryCfg: openAIRetryCfg,
 	}
 }
 
@@ -135,7 +137,7 @@ func (b *ChannelBootstrapper) registerChannel(name string, chCfg *core.ChannelCo
 		if timeout == 0 {
 			timeout = 60 * time.Second
 		}
-		gptImageCh := openai_original.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, timeout)
+		gptImageCh := openai_original.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, timeout, b.openAIRetryCfg)
 		b.registry.Register(gptImageCh)
 		slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
 
