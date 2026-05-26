@@ -77,7 +77,7 @@ export default function StatsPage() {
       {type_stats && (
         <>
           {/* 大屏数据 - 汇总统计 */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             {/* Gemini 汇总 */}
             <div className="relative overflow-hidden rounded-lg bg-gradient-to-br from-blue-500/10 to-purple-500/10 backdrop-blur-sm border border-blue-500/20 p-4">
               <div className="flex items-center justify-between">
@@ -136,32 +136,61 @@ export default function StatsPage() {
               </div>
             </div>
 
-            {/* 今日统计 */}
-            <div className="relative overflow-hidden rounded-lg bg-gradient-to-br from-orange-500/10 to-yellow-500/10 backdrop-blur-sm border border-orange-500/20 p-4">
+            {/* 今日 Gemini */}
+            <div className="relative overflow-hidden rounded-lg bg-gradient-to-br from-blue-500/5 to-orange-500/10 backdrop-blur-sm border border-orange-500/20 p-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-gradient-to-br from-orange-500 to-yellow-500 rounded-lg flex items-center justify-center">
+                  <div className="w-10 h-10 bg-gradient-to-br from-orange-500 to-blue-500 rounded-lg flex items-center justify-center">
                     <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                   </div>
                   <div>
-                    <h3 className="text-base font-semibold text-white">今日</h3>
+                    <h3 className="text-base font-semibold text-white">今日 Gemini</h3>
                     <p className="text-xs text-gray-400">当天请求</p>
                   </div>
                 </div>
                 <div className="text-right">
-                  <p className="text-2xl font-bold text-orange-400">{type_stats.today.total_requests.toLocaleString()}</p>
+                  <p className="text-2xl font-bold text-orange-400">{type_stats.today_gemini.total_requests.toLocaleString()}</p>
                   <p className="text-xs text-gray-400">
-                    成功率 {type_stats.today.total_requests > 0 
-                      ? ((type_stats.today.total_success / type_stats.today.total_requests) * 100).toFixed(1)
+                    成功率 {type_stats.today_gemini.total_requests > 0 
+                      ? ((type_stats.today_gemini.total_success / type_stats.today_gemini.total_requests) * 100).toFixed(1)
                       : "0.0"}%
                   </p>
                 </div>
               </div>
               <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-700/50">
-                <span className="text-xs text-gray-400">失败 {type_stats.today.total_fail.toLocaleString()}</span>
-                <span className="text-xs text-cyan-400">延迟 {Math.round(type_stats.today.avg_latency_ms)}ms</span>
+                <span className="text-xs text-gray-400">失败 {type_stats.today_gemini.total_fail.toLocaleString()}</span>
+                <span className="text-xs text-cyan-400">延迟 {Math.round(type_stats.today_gemini.avg_latency_ms)}ms</span>
+              </div>
+            </div>
+
+            {/* 今日 OpenAI */}
+            <div className="relative overflow-hidden rounded-lg bg-gradient-to-br from-green-500/5 to-yellow-500/10 backdrop-blur-sm border border-yellow-500/20 p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-gradient-to-br from-yellow-500 to-green-500 rounded-lg flex items-center justify-center">
+                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 className="text-base font-semibold text-white">今日 OpenAI</h3>
+                    <p className="text-xs text-gray-400">当天请求</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="text-2xl font-bold text-yellow-400">{type_stats.today_openai.total_requests.toLocaleString()}</p>
+                  <p className="text-xs text-gray-400">
+                    成功率 {type_stats.today_openai.total_requests > 0 
+                      ? ((type_stats.today_openai.total_success / type_stats.today_openai.total_requests) * 100).toFixed(1)
+                      : "0.0"}%
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-700/50">
+                <span className="text-xs text-gray-400">失败 {type_stats.today_openai.total_fail.toLocaleString()}</span>
+                <span className="text-xs text-cyan-400">延迟 {Math.round(type_stats.today_openai.avg_latency_ms)}ms</span>
               </div>
             </div>
           </div>

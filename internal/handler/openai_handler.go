@@ -247,7 +247,10 @@ func (h *OpenAIHandler) dispatchNonStream(
 
 		// Upstream returned — decide whether to fall back.
 		if shouldFallbackOnStatus(resp.Status, h.retryCodes) {
-			h.router.RecordResult(ch.Name(), false, latencyMs)
+			_, isRetryCoded := h.retryCodes[resp.Status]
+			if !isRetryCoded {
+				h.router.RecordResult(ch.Name(), false, latencyMs)
+			}
 			h.logUsage(ctx, ch.Name(), model, false, resp.Status, statusTextFallback(resp.Status), latencyMs, requestIP, false, endpoint, truncateBody(resp.Body))
 			chLog.Warn("channel returned retriable status, trying next", "status", resp.Status)
 			lastErr = statusError(resp.Status)
@@ -322,7 +325,10 @@ func (h *OpenAIHandler) dispatchStream(
 		var statusErr *openai_original.UpstreamStatusError
 		if errors.As(err, &statusErr) {
 			if shouldFallbackOnStatus(statusErr.Status, h.retryCodes) {
-				h.router.RecordResult(ch.Name(), false, latencyMs)
+				_, isRetryCoded := h.retryCodes[statusErr.Status]
+				if !isRetryCoded {
+					h.router.RecordResult(ch.Name(), false, latencyMs)
+				}
 				h.logUsage(ctx, ch.Name(), model, false, statusErr.Status, statusTextFallback(statusErr.Status), latencyMs, requestIP, false, endpoint, truncateBody(statusErr.Body))
 				chLog.Warn("upstream retriable status, trying next", "status", statusErr.Status)
 				lastErr = err

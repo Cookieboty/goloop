@@ -453,9 +453,10 @@ type OverviewStats struct {
 
 // ChannelTypeStats 渠道类型汇总统计
 type ChannelTypeStats struct {
-	Gemini OverviewStats `json:"gemini"`
-	OpenAI OverviewStats `json:"openai"`
-	Today  OverviewStats `json:"today"`
+	Gemini      OverviewStats `json:"gemini"`
+	OpenAI      OverviewStats `json:"openai"`
+	TodayGemini OverviewStats `json:"today_gemini"`
+	TodayOpenAI OverviewStats `json:"today_openai"`
 }
 
 // ChannelDetailStats 单个渠道详细统计
@@ -501,29 +502,42 @@ func (r *Repository) GetGlobalStats() (*ChannelTypeStats, []ChannelDetailStats, 
 		return nil, nil, fmt.Errorf("failed to query channel stats: %w", err)
 	}
 	
-	// 2. 查询今日统计（只统计最终结果）
+	// 2. 查询今日统计 - 按 Gemini/OpenAI 分类
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	var todayResult struct {
-		TotalRequests int64
-		TotalSuccess  int64
-		TotalFail     int64
-		AvgLatencyMs  float64
-	}
-	
+
+	var todayGeminiStats OverviewStats
 	err = r.db.Model(&UsageLog{}).
-		Where("created_at >= ?", today).
-		Where("should_count = ?", true).
+		Joins("INNER JOIN channels ON usage_logs.channel_name = channels.name").
+		Where("usage_logs.created_at >= ?", today).
+		Where("usage_logs.should_count = ?", true).
+		Where("channels.type IN ?", []string{"gemini_callback", "gemini_openai", "gemini_original"}).
 		Select(
 			"COUNT(*) as total_requests",
 			"SUM(CASE WHEN success THEN 1 ELSE 0 END) as total_success",
 			"SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) as total_fail",
-			"COALESCE(AVG(latency_ms), 0) as avg_latency_ms",
+			"COALESCE(AVG(usage_logs.latency_ms), 0) as avg_latency_ms",
 		).
-		Scan(&todayResult).Error
-	
+		Scan(&todayGeminiStats).Error
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to query today stats: %w", err)
+		return nil, nil, fmt.Errorf("failed to query today gemini stats: %w", err)
+	}
+
+	var todayOpenAIStats OverviewStats
+	err = r.db.Model(&UsageLog{}).
+		Joins("INNER JOIN channels ON usage_logs.channel_name = channels.name").
+		Where("usage_logs.created_at >= ?", today).
+		Where("usage_logs.should_count = ?", true).
+		Where("channels.type IN ?", []string{"openai_original", "openai_callback"}).
+		Select(
+			"COUNT(*) as total_requests",
+			"SUM(CASE WHEN success THEN 1 ELSE 0 END) as total_success",
+			"SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) as total_fail",
+			"COALESCE(AVG(usage_logs.latency_ms), 0) as avg_latency_ms",
+		).
+		Scan(&todayOpenAIStats).Error
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to query today openai stats: %w", err)
 	}
 	
 	// 3. 构建渠道详情列表（统计所有尝试，显示渠道真实表现）
@@ -588,14 +602,10 @@ func (r *Repository) GetGlobalStats() (*ChannelTypeStats, []ChannelDetailStats, 
 	
 	// 6. 组装返回结果
 	typeStats := &ChannelTypeStats{
-		Gemini: geminiStats,
-		OpenAI: openaiStats,
-		Today: OverviewStats{
-			TotalRequests: todayResult.TotalRequests,
-			TotalSuccess:  todayResult.TotalSuccess,
-			TotalFail:     todayResult.TotalFail,
-			AvgLatencyMs:  todayResult.AvgLatencyMs,
-		},
+		Gemini:      geminiStats,
+		OpenAI:      openaiStats,
+		TodayGemini: todayGeminiStats,
+		TodayOpenAI: todayOpenAIStats,
 	}
 	
 	return typeStats, channelDetails, nil

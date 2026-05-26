@@ -162,7 +162,8 @@ export interface OverviewStats {
 export interface ChannelTypeStats {
   gemini: OverviewStats;
   openai: OverviewStats;
-  today: OverviewStats;
+  today_gemini: OverviewStats;
+  today_openai: OverviewStats;
 }
 
 export interface ChannelDetailStats {
