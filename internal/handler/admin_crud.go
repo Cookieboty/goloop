@@ -79,6 +79,9 @@ func (h *AdminCRUDHandler) RegisterRoutes(mux *http.ServeMux) {
 	
 	// Error Logs
 	mux.HandleFunc("GET /admin/api/error-logs", h.requireAuth(h.handleGetErrorLogs))
+
+	// Latency Logs
+	mux.HandleFunc("GET /admin/api/latency-logs", h.requireAuth(h.handleGetLatencyLogs))
 	
 	// Global Stats
 	mux.HandleFunc("GET /admin/api/global-stats", h.requireAuth(h.handleGetGlobalStats))
@@ -810,6 +813,61 @@ func (h *AdminCRUDHandler) handleGetErrorLogs(w http.ResponseWriter, r *http.Req
 	writeJSON(w, map[string]interface{}{
 		"logs":  logs,
 		"total": totalCount,
+	})
+}
+
+func (h *AdminCRUDHandler) handleGetLatencyLogs(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	offset := 0
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	model := r.URL.Query().Get("model")
+	channel := r.URL.Query().Get("channel")
+
+	var startDate, endDate *time.Time
+	if s := r.URL.Query().Get("start_date"); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			startDate = &t
+		}
+	}
+	if e := r.URL.Query().Get("end_date"); e != "" {
+		if t, err := time.Parse(time.RFC3339, e); err == nil {
+			endDate = &t
+		}
+	}
+
+	logs, err := h.repo.GetLatencyLogs(limit, offset, model, channel, startDate, endDate)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "failed to get latency logs: "+err.Error())
+		return
+	}
+
+	totalCount, err := h.repo.GetLatencyLogsCount(model, channel, startDate, endDate)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "failed to count latency logs: "+err.Error())
+		return
+	}
+
+	stats, err := h.repo.GetLatencyStats(model, channel, startDate, endDate)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "failed to get latency stats: "+err.Error())
+		return
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"logs":  logs,
+		"total": totalCount,
+		"stats": stats,
 	})
 }
 

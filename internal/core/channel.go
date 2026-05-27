@@ -13,13 +13,22 @@ import (
 // errors.Is and fall back to the alternative path.
 var ErrNotSupported = errors.New("channel: operation not supported")
 
+// RawResult carries the upstream response bytes along with timing metrics
+// so the handler can log latency breakdown (TTFB vs body download).
+type RawResult struct {
+	Body          []byte
+	TTFBMs        int64 // time from request sent to response headers received
+	BodyReadMs    int64 // time to read the entire response body
+	ResponseBytes int   // len(Body)
+}
+
 // RawBodyGenerator is an optional interface for channels that perform
 // zero-conversion pass-through to a Google-native upstream. When a channel
 // implements this interface, the handler will call GenerateRaw with the
 // unmodified request body bytes instead of the parsed struct, and will write
 // the raw response bytes directly back to the client.
 type RawBodyGenerator interface {
-	GenerateRaw(ctx context.Context, rawBody []byte, modelName string) ([]byte, error)
+	GenerateRaw(ctx context.Context, rawBody []byte, modelName string) (*RawResult, error)
 }
 
 // RawStreamGenerator is an optional interface for channels that can stream
@@ -43,9 +52,12 @@ type StreamGenerator interface {
 // propagate status, headers, and body to the client without losing fidelity
 // (rate-limit headers, non-JSON content types, real HTTP status codes).
 type OpenAIRawResponse struct {
-	Status  int
-	Headers http.Header
-	Body    []byte
+	Status        int
+	Headers       http.Header
+	Body          []byte
+	TTFBMs        int64 // time from request sent to response headers received
+	BodyReadMs    int64 // time to read the entire response body
+	ResponseBytes int   // len(Body)
 }
 
 // OpenAIRawGenerator is an optional interface for channels that perform

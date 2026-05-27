@@ -79,6 +79,7 @@ func (ch *Channel) GenerateOpenAIRaw(ctx context.Context, contentType string, ra
 	var lastStatus int
 	var lastHeaders http.Header
 	var lastBody []byte
+	var ttfbMs, bodyReadMs int64
 
 	for attempt := 0; attempt <= ch.cfg.RetryAttempts; attempt++ {
 		if attempt > 0 {
@@ -100,12 +101,16 @@ func (ch *Channel) GenerateOpenAIRaw(ctx context.Context, contentType string, ra
 		httpReq.Header.Set("Content-Type", contentType)
 		httpReq.Header.Set("Authorization", "Bearer "+acc.APIKey())
 
+		start := time.Now()
 		resp, err := ch.HTTPClient.Do(httpReq)
+		ttfbMs = time.Since(start).Milliseconds()
 		if err != nil {
 			return nil, fmt.Errorf("gpt-image: HTTP request failed: %w", err)
 		}
 
+		bodyStart := time.Now()
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		bodyReadMs = time.Since(bodyStart).Milliseconds()
 		resp.Body.Close()
 		if readErr != nil {
 			return nil, fmt.Errorf("gpt-image: read response: %w", readErr)
@@ -125,9 +130,12 @@ func (ch *Channel) GenerateOpenAIRaw(ctx context.Context, contentType string, ra
 	}
 
 	return &core.OpenAIRawResponse{
-		Status:  lastStatus,
-		Headers: lastHeaders,
-		Body:    lastBody,
+		Status:        lastStatus,
+		Headers:       lastHeaders,
+		Body:          lastBody,
+		TTFBMs:        ttfbMs,
+		BodyReadMs:    bodyReadMs,
+		ResponseBytes: len(lastBody),
 	}, nil
 }
 

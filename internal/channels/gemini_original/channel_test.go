@@ -56,7 +56,7 @@ func TestGenerateRaw_PassthroughBody(t *testing.T) {
 
 	reqBody := []byte(`{"contents":[{"parts":[{"text":"画一只猫"}]}],"safetySettings":[{"category":"HARM_CATEGORY_HARASSMENT","threshold":"OFF"}],"generationConfig":{"responseModalities":["image"],"imageConfig":{"aspectRatio":"9:16","imageSize":"2K"}}}`)
 
-	resp, err := ch.GenerateRaw(context.Background(), reqBody, "gemini-3.1-flash-image-preview")
+	result, err := ch.GenerateRaw(context.Background(), reqBody, "gemini-3.1-flash-image-preview")
 	if err != nil {
 		t.Fatalf("GenerateRaw error: %v", err)
 	}
@@ -72,8 +72,14 @@ func TestGenerateRaw_PassthroughBody(t *testing.T) {
 	}
 
 	// Verify the response was returned.
-	if len(resp) == 0 {
+	if len(result.Body) == 0 {
 		t.Error("expected non-empty response")
+	}
+	if result.ResponseBytes != len(result.Body) {
+		t.Errorf("ResponseBytes mismatch: got %d, want %d", result.ResponseBytes, len(result.Body))
+	}
+	if result.TTFBMs < 0 {
+		t.Errorf("TTFBMs should be non-negative, got %d", result.TTFBMs)
 	}
 }
 

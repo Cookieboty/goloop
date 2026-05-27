@@ -41,7 +41,7 @@ func NewChannel(name, baseURL string, weight int, pool *core.DefaultAccountPool,
 
 // GenerateRaw forwards rawBody verbatim to the upstream Gemini API and returns
 // the upstream response bytes unmodified. It implements core.RawBodyGenerator.
-func (ch *Channel) GenerateRaw(ctx context.Context, rawBody []byte, modelName string) ([]byte, error) {
+func (ch *Channel) GenerateRaw(ctx context.Context, rawBody []byte, modelName string) (*core.RawResult, error) {
 	acc, err := ch.Pool.Select()
 	if err != nil {
 		return nil, fmt.Errorf("gemini: no account available: %w", err)
@@ -60,13 +60,17 @@ func (ch *Channel) GenerateRaw(ctx context.Context, rawBody []byte, modelName st
 	// Google native API uses x-goog-api-key header for authentication.
 	httpReq.Header.Set("x-goog-api-key", acc.APIKey())
 
+	start := time.Now()
 	resp, err := ch.HTTPClient.Do(httpReq)
+	ttfbMs := time.Since(start).Milliseconds()
 	if err != nil {
 		return nil, fmt.Errorf("gemini: HTTP request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
+	bodyStart := time.Now()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20)) // 32 MiB limit
+	bodyReadMs := time.Since(bodyStart).Milliseconds()
 	if err != nil {
 		return nil, fmt.Errorf("gemini: read response: %w", err)
 	}
@@ -75,7 +79,12 @@ func (ch *Channel) GenerateRaw(ctx context.Context, rawBody []byte, modelName st
 	}
 
 	success = true
-	return data, nil
+	return &core.RawResult{
+		Body:          data,
+		TTFBMs:        ttfbMs,
+		BodyReadMs:    bodyReadMs,
+		ResponseBytes: len(data),
+	}, nil
 }
 
 // StreamRaw opens a streaming request to the upstream Gemini SSE endpoint

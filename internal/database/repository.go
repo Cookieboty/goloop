@@ -250,17 +250,20 @@ func (r *Repository) ToggleAPIKey(id uint, enabled bool) error {
 
 // LogEntry 使用日志条目（用于批量插入）
 type LogEntry struct {
-	APIKeyID      uint
-	ChannelName   string
-	Model         string
-	Success       bool
-	StatusCode    *int
-	ErrorMessage  *string
-	Endpoint      *string
-	UpstreamError *string
-	LatencyMs     *int
-	RequestIP     *string
-	UpdateStats   bool // 是否更新 API Key 的统计数据（TotalSuccess/TotalFail）
+	APIKeyID       uint
+	ChannelName    string
+	Model          string
+	Success        bool
+	StatusCode     *int
+	ErrorMessage   *string
+	Endpoint       *string
+	UpstreamError  *string
+	LatencyMs      *int
+	RequestIP      *string
+	UpstreamTTFBMs *int
+	BodyReadMs     *int
+	ResponseBytes  *int
+	UpdateStats    bool // 是否更新 API Key 的统计数据（TotalSuccess/TotalFail）
 }
 
 // BatchInsertUsageLogs 批量插入使用日志
@@ -272,18 +275,21 @@ func (r *Repository) BatchInsertUsageLogs(entries []LogEntry) error {
 	logs := make([]UsageLog, len(entries))
 	for i, entry := range entries {
 		logs[i] = UsageLog{
-			APIKeyID:      entry.APIKeyID,
-			ChannelName:   entry.ChannelName,
-			Model:         entry.Model,
-			Success:       entry.Success,
-			StatusCode:    entry.StatusCode,
-			ErrorMessage:  entry.ErrorMessage,
-			Endpoint:      entry.Endpoint,
-			UpstreamError: entry.UpstreamError,
-			LatencyMs:     entry.LatencyMs,
-			RequestIP:     entry.RequestIP,
-			ShouldCount:   entry.UpdateStats,
-			CreatedAt:     time.Now(),
+			APIKeyID:       entry.APIKeyID,
+			ChannelName:    entry.ChannelName,
+			Model:          entry.Model,
+			Success:        entry.Success,
+			StatusCode:     entry.StatusCode,
+			ErrorMessage:   entry.ErrorMessage,
+			Endpoint:       entry.Endpoint,
+			UpstreamError:  entry.UpstreamError,
+			LatencyMs:      entry.LatencyMs,
+			RequestIP:      entry.RequestIP,
+			UpstreamTTFBMs: entry.UpstreamTTFBMs,
+			BodyReadMs:     entry.BodyReadMs,
+			ResponseBytes:  entry.ResponseBytes,
+			ShouldCount:    entry.UpdateStats,
+			CreatedAt:      time.Now(),
 		}
 	}
 	
@@ -371,6 +377,162 @@ func (r *Repository) GetErrorLogsCount(startDate, endDate *time.Time) (int64, er
 	var count int64
 	err := query.Count(&count).Error
 	return count, err
+}
+
+// LatencyStats holds aggregated latency metrics for a set of usage logs.
+type LatencyStats struct {
+	TotalRequests    int64   `json:"total_requests"`
+	SuccessCount     int64   `json:"success_count"`
+	SuccessRate      float64 `json:"success_rate"`
+	AvgLatencyMs     float64 `json:"avg_latency_ms"`
+	AvgTTFBMs        float64 `json:"avg_ttfb_ms"`
+	AvgBodyReadMs    float64 `json:"avg_body_read_ms"`
+	P95LatencyMs     float64 `json:"p95_latency_ms"`
+	AvgResponseBytes float64 `json:"avg_response_bytes"`
+}
+
+// GetLatencyLogs returns all usage logs (not just errors) with optional filters.
+func (r *Repository) GetLatencyLogs(limit, offset int, model, channel string, startDate, endDate *time.Time) ([]UsageLog, error) {
+	query := r.db.Model(&UsageLog{})
+
+	if model != "" {
+		query = query.Where("model = ?", model)
+	}
+	if channel != "" {
+		query = query.Where("channel_name = ?", channel)
+	}
+	if startDate != nil {
+		query = query.Where("created_at >= ?", *startDate)
+	}
+	if endDate != nil {
+		query = query.Where("created_at <= ?", *endDate)
+	}
+
+	var logs []UsageLog
+	err := query.Order("created_at DESC").Limit(limit).Offset(offset).Find(&logs).Error
+	return logs, err
+}
+
+// GetLatencyLogsCount returns total count for pagination.
+func (r *Repository) GetLatencyLogsCount(model, channel string, startDate, endDate *time.Time) (int64, error) {
+	query := r.db.Model(&UsageLog{})
+
+	if model != "" {
+		query = query.Where("model = ?", model)
+	}
+	if channel != "" {
+		query = query.Where("channel_name = ?", channel)
+	}
+	if startDate != nil {
+		query = query.Where("created_at >= ?", *startDate)
+	}
+	if endDate != nil {
+		query = query.Where("created_at <= ?", *endDate)
+	}
+
+	var count int64
+	err := query.Count(&count).Error
+	return count, err
+}
+
+// GetLatencyStats computes aggregated latency statistics.
+func (r *Repository) GetLatencyStats(model, channel string, startDate, endDate *time.Time) (*LatencyStats, error) {
+	query := r.db.Model(&UsageLog{})
+
+	if model != "" {
+		query = query.Where("model = ?", model)
+	}
+	if channel != "" {
+		query = query.Where("channel_name = ?", channel)
+	}
+	if startDate != nil {
+		query = query.Where("created_at >= ?", *startDate)
+	}
+	if endDate != nil {
+		query = query.Where("created_at <= ?", *endDate)
+	}
+
+	var stats struct {
+		Total        int64
+		SuccessCount int64
+		AvgLatency   float64
+		AvgTTFB      float64
+		AvgBodyRead  float64
+		AvgRespBytes float64
+	}
+	err := query.Select(`
+		COUNT(*) as total,
+		SUM(CASE WHEN success = true THEN 1 ELSE 0 END) as success_count,
+		AVG(latency_ms) as avg_latency,
+		AVG(upstream_ttfb_ms) as avg_ttfb,
+		AVG(body_read_ms) as avg_body_read,
+		AVG(response_bytes) as avg_resp_bytes
+	`).Scan(&stats).Error
+	if err != nil {
+		return nil, err
+	}
+
+	var successRate float64
+	if stats.Total > 0 {
+		successRate = float64(stats.SuccessCount) / float64(stats.Total) * 100
+	}
+
+	// P95 latency: get the value at the 95th percentile position
+	var p95 float64
+	if stats.Total > 0 {
+		// Count only records with non-null latency for accurate percentile
+		p95CountQuery := r.db.Model(&UsageLog{}).Where("latency_ms IS NOT NULL")
+		if model != "" {
+			p95CountQuery = p95CountQuery.Where("model = ?", model)
+		}
+		if channel != "" {
+			p95CountQuery = p95CountQuery.Where("channel_name = ?", channel)
+		}
+		if startDate != nil {
+			p95CountQuery = p95CountQuery.Where("created_at >= ?", *startDate)
+		}
+		if endDate != nil {
+			p95CountQuery = p95CountQuery.Where("created_at <= ?", *endDate)
+		}
+		var nonNullCount int64
+		p95CountQuery.Count(&nonNullCount)
+
+		if nonNullCount > 0 {
+			p95Offset := int(float64(nonNullCount) * 0.95)
+			if p95Offset >= int(nonNullCount) {
+				p95Offset = int(nonNullCount) - 1
+			}
+			p95Query := r.db.Model(&UsageLog{}).Where("latency_ms IS NOT NULL")
+			if model != "" {
+				p95Query = p95Query.Where("model = ?", model)
+			}
+			if channel != "" {
+				p95Query = p95Query.Where("channel_name = ?", channel)
+			}
+			if startDate != nil {
+				p95Query = p95Query.Where("created_at >= ?", *startDate)
+			}
+			if endDate != nil {
+				p95Query = p95Query.Where("created_at <= ?", *endDate)
+			}
+			var p95Val *float64
+			p95Query.Select("latency_ms").Order("latency_ms ASC").Offset(p95Offset).Limit(1).Scan(&p95Val)
+			if p95Val != nil {
+				p95 = *p95Val
+			}
+		}
+	}
+
+	return &LatencyStats{
+		TotalRequests:    stats.Total,
+		SuccessCount:     stats.SuccessCount,
+		SuccessRate:      successRate,
+		AvgLatencyMs:     stats.AvgLatency,
+		AvgTTFBMs:        stats.AvgTTFB,
+		AvgBodyReadMs:    stats.AvgBodyRead,
+		P95LatencyMs:     p95,
+		AvgResponseBytes: stats.AvgRespBytes,
+	}, nil
 }
 
 // DeleteUsageLogsBefore 删除指定时间之前的日志

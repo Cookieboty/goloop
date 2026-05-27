@@ -8,6 +8,7 @@ import type {
   ModelMapping,
   APIKey,
   UsageLog,
+  LatencyStats,
   CreateChannelRequest,
   CreateAccountRequest,
   CreateMappingRequest,
@@ -261,6 +262,28 @@ export const api = {
     
     const query = searchParams.toString() ? `?${searchParams.toString()}` : "";
     return request<{ logs: UsageLog[]; total: number }>(`/admin/api/error-logs${query}`);
+  },
+
+  // ==================== Latency Logs ====================
+
+  getLatencyLogs(params: {
+    limit?: number;
+    offset?: number;
+    model?: string;
+    channel?: string;
+    start_date?: string;
+    end_date?: string;
+  }): Promise<{ logs: UsageLog[]; total: number; stats: LatencyStats }> {
+    const searchParams = new URLSearchParams();
+    if (params.limit) searchParams.append("limit", params.limit.toString());
+    if (params.offset) searchParams.append("offset", params.offset.toString());
+    if (params.model) searchParams.append("model", params.model);
+    if (params.channel) searchParams.append("channel", params.channel);
+    if (params.start_date) searchParams.append("start_date", params.start_date);
+    if (params.end_date) searchParams.append("end_date", params.end_date);
+
+    const query = searchParams.toString() ? `?${searchParams.toString()}` : "";
+    return request<{ logs: UsageLog[]; total: number; stats: LatencyStats }>(`/admin/api/latency-logs${query}`);
   },
 
   // ==================== Global Stats ====================

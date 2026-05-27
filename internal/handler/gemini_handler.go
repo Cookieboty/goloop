@@ -181,14 +181,14 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 				if err != nil {
 					errMsg = err.Error()
 				}
-				h.logUsage(ctx, candidate.Name(), googleModel, false, 0, errMsg, latency, requestIP, false, geminiEndpoint)
+				h.logUsage(ctx, candidate.Name(), googleModel, false, 0, errMsg, latency, requestIP, false, geminiEndpoint, nil)
 				chLog.Warn("raw stream failed, trying next channel", "err", err)
 				continue
 			}
 			latency := time.Since(start).Milliseconds()
 			totalLatency += latency
 			h.router.RecordResult(candidate.Name(), true, latency)
-			h.logUsage(ctx, candidate.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true, geminiEndpoint)
+			h.logUsage(ctx, candidate.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true, geminiEndpoint, nil)
 			return
 		}
 
@@ -208,14 +208,14 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 				if err != nil {
 					errMsg = err.Error()
 				}
-				h.logUsage(ctx, candidate.Name(), googleModel, false, 0, errMsg, latency, requestIP, false, geminiEndpoint)
+				h.logUsage(ctx, candidate.Name(), googleModel, false, 0, errMsg, latency, requestIP, false, geminiEndpoint, nil)
 				chLog.Warn("stream failed, trying next channel", "err", err)
 				continue
 			}
 			latency := time.Since(start).Milliseconds()
 			totalLatency += latency
 			h.router.RecordResult(candidate.Name(), true, latency)
-			h.logUsage(ctx, candidate.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true, geminiEndpoint)
+			h.logUsage(ctx, candidate.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true, geminiEndpoint, nil)
 			return
 		}
 
@@ -235,7 +235,7 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 			if submitErr != nil {
 				errMsg = submitErr.Error()
 			}
-			h.logUsage(ctx, candidate.Name(), googleModel, false, 0, errMsg, latency, requestIP, false, geminiEndpoint)
+			h.logUsage(ctx, candidate.Name(), googleModel, false, 0, errMsg, latency, requestIP, false, geminiEndpoint, nil)
 			chLog.Warn("submitTask failed, trying next channel", "err", submitErr)
 			continue
 		}
@@ -269,7 +269,7 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 					h.writeSSEError(w, gErr, 500)
 				}
 				h.router.RecordResult(candidate.Name(), false, latency)
-				h.logUsage(ctx, candidate.Name(), googleModel, false, 500, errMsg, totalLatency, requestIP, true, geminiEndpoint)
+				h.logUsage(ctx, candidate.Name(), googleModel, false, 500, errMsg, totalLatency, requestIP, true, geminiEndpoint, nil)
 				return
 			}
 			record := result.Record
@@ -278,7 +278,7 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 				gErr, _ := transformer.ToGoogleError(500, "no result URLs")
 				h.writeSSEError(w, gErr, 500)
 				h.router.RecordResult(candidate.Name(), false, latency)
-				h.logUsage(ctx, candidate.Name(), googleModel, false, 500, "no result URLs", totalLatency, requestIP, true, geminiEndpoint)
+				h.logUsage(ctx, candidate.Name(), googleModel, false, 500, "no result URLs", totalLatency, requestIP, true, geminiEndpoint, nil)
 				return
 			}
 			googleResp, err := h.respTransformer.ToGoogleStreamingResponse(ctx, record.ResultJSON().ResultURLs, requestID, isImageOnlyRequest(googleReq))
@@ -287,13 +287,13 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 				gErr, _ := transformer.ToGoogleError(500, err.Error())
 				h.writeSSEError(w, gErr, 500)
 				h.router.RecordResult(candidate.Name(), false, latency)
-				h.logUsage(ctx, candidate.Name(), googleModel, false, 500, err.Error(), totalLatency, requestIP, true, geminiEndpoint)
+				h.logUsage(ctx, candidate.Name(), googleModel, false, 500, err.Error(), totalLatency, requestIP, true, geminiEndpoint, nil)
 				return
 			}
 			h.writeSSEData(w, flusher, googleResp)
 			h.writeSSEEvent(w, flusher, "data: [DONE]\n\n")
 			h.router.RecordResult(candidate.Name(), true, latency)
-			h.logUsage(ctx, candidate.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true, geminiEndpoint)
+			h.logUsage(ctx, candidate.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true, geminiEndpoint, nil)
 		case <-ctx.Done():
 			chLog.Info("request cancelled")
 			h.writeSSEError(w, model.GoogleError{
@@ -304,7 +304,7 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 	}
 
 	log.Error("all channels failed for streaming request")
-	h.logUsage(ctx, lastChannel, googleModel, false, http.StatusServiceUnavailable, "all channels failed", totalLatency, requestIP, true, geminiEndpoint)
+	h.logUsage(ctx, lastChannel, googleModel, false, http.StatusServiceUnavailable, "all channels failed", totalLatency, requestIP, true, geminiEndpoint, nil)
 	h.writeSSEError(w, model.GoogleError{
 		Error: model.GoogleErrorDetail{Code: 503, Message: "all channels failed", Status: "UNAVAILABLE"},
 	}, http.StatusServiceUnavailable)
@@ -439,16 +439,16 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 		// Fast path: channels implementing RawBodyGenerator bypass struct
 		// conversion entirely and return raw bytes for direct pass-through.
 		if rawGen, ok := ch.(core.RawBodyGenerator); ok {
-			rawResp, err := rawGen.GenerateRaw(ctx, bodyBytes, googleModel)
+			rawResult, err := rawGen.GenerateRaw(ctx, bodyBytes, googleModel)
 			latency := time.Since(start).Milliseconds()
 			totalLatency += latency
 			
 			if err == nil {
 				h.router.RecordResult(ch.Name(), true, latency)
-				h.logUsage(ctx, ch.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true, geminiEndpoint)
+				h.logUsage(ctx, ch.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true, geminiEndpoint, rawResult)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				w.Write(rawResp)
+				w.Write(rawResult.Body)
 				return
 			}
 			if ctx.Err() != nil {
@@ -462,7 +462,7 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 			if err != nil {
 				errMsg = err.Error()
 			}
-			h.logUsage(ctx, ch.Name(), googleModel, false, 0, errMsg, latency, requestIP, false, geminiEndpoint)
+			h.logUsage(ctx, ch.Name(), googleModel, false, 0, errMsg, latency, requestIP, false, geminiEndpoint, nil)
 			chLog.Warn("channel failed, trying next", "err", err)
 			lastErr = err
 			continue
@@ -474,7 +474,7 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 
 		if err == nil {
 			h.router.RecordResult(ch.Name(), true, latency)
-			h.logUsage(ctx, ch.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true, geminiEndpoint)
+			h.logUsage(ctx, ch.Name(), googleModel, true, http.StatusOK, "", totalLatency, requestIP, true, geminiEndpoint, nil)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(googleResp)
@@ -493,7 +493,7 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 		if err != nil {
 			errMsg = err.Error()
 		}
-		h.logUsage(ctx, ch.Name(), googleModel, false, 0, errMsg, latency, requestIP, false, geminiEndpoint)
+		h.logUsage(ctx, ch.Name(), googleModel, false, 0, errMsg, latency, requestIP, false, geminiEndpoint, nil)
 		chLog.Warn("channel failed, trying next", "err", err)
 		lastErr = err
 	}
@@ -502,14 +502,14 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 	var tErr *kieai.TaskFailedError
 	if errors.As(lastErr, &tErr) {
 		gErr, httpCode := transformer.ToGoogleError(500, tErr.Reason)
-		h.logUsage(ctx, lastChannel, googleModel, false, httpCode, tErr.Reason, totalLatency, requestIP, true, geminiEndpoint)
+		h.logUsage(ctx, lastChannel, googleModel, false, httpCode, tErr.Reason, totalLatency, requestIP, true, geminiEndpoint, nil)
 		writeGoogleError(w, gErr, httpCode)
 	} else {
 		errMsg := "all channels failed"
 		if lastErr != nil {
 			errMsg = lastErr.Error()
 		}
-		h.logUsage(ctx, lastChannel, googleModel, false, http.StatusServiceUnavailable, errMsg, totalLatency, requestIP, true, geminiEndpoint)
+		h.logUsage(ctx, lastChannel, googleModel, false, http.StatusServiceUnavailable, errMsg, totalLatency, requestIP, true, geminiEndpoint, nil)
 		writeGoogleError(w, model.GoogleError{
 			Error: model.GoogleErrorDetail{Code: 503, Message: "all channels failed", Status: "UNAVAILABLE"},
 		}, http.StatusServiceUnavailable)
@@ -570,7 +570,7 @@ func generateRequestID() string {
 
 // logUsage 记录 API Key 使用情况
 // updateStats 为 true 时更新 TotalSuccess/TotalFail，false 时只记录日志不更新统计
-func (h *GeminiHandler) logUsage(ctx context.Context, channelName, model string, success bool, statusCode int, errorMsg string, latencyMs int64, requestIP string, updateStats bool, endpoint string) {
+func (h *GeminiHandler) logUsage(ctx context.Context, channelName, model string, success bool, statusCode int, errorMsg string, latencyMs int64, requestIP string, updateStats bool, endpoint string, rawResult *core.RawResult) {
 	if h.usageLogger == nil {
 		return
 	}
@@ -617,6 +617,15 @@ func (h *GeminiHandler) logUsage(ctx context.Context, channelName, model string,
 		LatencyMs:    latency,
 		RequestIP:    ip,
 		UpdateStats:  updateStats,
+	}
+
+	if rawResult != nil {
+		ttfb := int(rawResult.TTFBMs)
+		entry.UpstreamTTFBMs = &ttfb
+		bodyRead := int(rawResult.BodyReadMs)
+		entry.BodyReadMs = &bodyRead
+		respBytes := rawResult.ResponseBytes
+		entry.ResponseBytes = &respBytes
 	}
 	
 	h.usageLogger.Log(entry)

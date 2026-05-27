@@ -9,6 +9,7 @@ const navItems = [
   { href: "/channels", label: "渠道管理", icon: "📡" },
   { href: "/api-keys", label: "API Key", icon: "🔑" },
   { href: "/accounts", label: "账号池", icon: "👤" },
+  { href: "/latency", label: "延迟诊断", icon: "⏱️" },
   { href: "/error-logs", label: "错误日志", icon: "⚠️" },
   { href: "/tools", label: "工具", icon: "🔧" },
   { href: "/stats", label: "统计", icon: "📈" },

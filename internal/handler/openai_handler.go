@@ -239,7 +239,7 @@ func (h *OpenAIHandler) dispatchNonStream(
 		if err != nil {
 			h.router.RecordResult(ch.Name(), false, latencyMs)
 			errMsg := err.Error()
-			h.logUsage(ctx, ch.Name(), model, false, 0, errMsg, latencyMs, requestIP, false, endpoint, "")
+			h.logUsage(ctx, ch.Name(), model, false, 0, errMsg, latencyMs, requestIP, false, endpoint, "", nil)
 			chLog.Warn("channel transport error, trying next", "err", err)
 			lastErr = err
 			continue
@@ -251,7 +251,7 @@ func (h *OpenAIHandler) dispatchNonStream(
 			if !isRetryCoded {
 				h.router.RecordResult(ch.Name(), false, latencyMs)
 			}
-			h.logUsage(ctx, ch.Name(), model, false, resp.Status, statusTextFallback(resp.Status), latencyMs, requestIP, false, endpoint, truncateBody(resp.Body))
+			h.logUsage(ctx, ch.Name(), model, false, resp.Status, statusTextFallback(resp.Status), latencyMs, requestIP, false, endpoint, truncateBody(resp.Body), resp)
 			chLog.Warn("channel returned retriable status, trying next", "status", resp.Status)
 			lastErr = statusError(resp.Status)
 			continue
@@ -261,7 +261,7 @@ func (h *OpenAIHandler) dispatchNonStream(
 		h.writeRawResponse(w, resp)
 		h.router.RecordResult(ch.Name(), true, latencyMs)
 		isSuccess := resp.Status >= 200 && resp.Status < 300
-		h.logUsage(ctx, ch.Name(), model, isSuccess, resp.Status, "", totalLatency, requestIP, true, endpoint, "")
+		h.logUsage(ctx, ch.Name(), model, isSuccess, resp.Status, "", totalLatency, requestIP, true, endpoint, "", resp)
 		return
 	}
 
@@ -271,7 +271,7 @@ func (h *OpenAIHandler) dispatchNonStream(
 	if lastErr != nil {
 		errMsg = lastErr.Error()
 	}
-	h.logUsage(ctx, lastChannel, model, false, http.StatusBadGateway, errMsg, totalLatency, requestIP, true, endpoint, "")
+	h.logUsage(ctx, lastChannel, model, false, http.StatusBadGateway, errMsg, totalLatency, requestIP, true, endpoint, "", nil)
 	h.writeOpenAIError(w, "All OpenAI image channels failed", "api_error", http.StatusBadGateway)
 }
 
@@ -318,7 +318,7 @@ func (h *OpenAIHandler) dispatchStream(
 
 		if err == nil {
 			h.router.RecordResult(ch.Name(), true, latencyMs)
-			h.logUsage(ctx, ch.Name(), model, true, http.StatusOK, "", totalLatency, requestIP, true, endpoint, "")
+			h.logUsage(ctx, ch.Name(), model, true, http.StatusOK, "", totalLatency, requestIP, true, endpoint, "", nil)
 			return
 		}
 
@@ -329,7 +329,7 @@ func (h *OpenAIHandler) dispatchStream(
 				if !isRetryCoded {
 					h.router.RecordResult(ch.Name(), false, latencyMs)
 				}
-				h.logUsage(ctx, ch.Name(), model, false, statusErr.Status, statusTextFallback(statusErr.Status), latencyMs, requestIP, false, endpoint, truncateBody(statusErr.Body))
+				h.logUsage(ctx, ch.Name(), model, false, statusErr.Status, statusTextFallback(statusErr.Status), latencyMs, requestIP, false, endpoint, truncateBody(statusErr.Body), nil)
 				chLog.Warn("upstream retriable status, trying next", "status", statusErr.Status)
 				lastErr = err
 				continue
@@ -340,14 +340,14 @@ func (h *OpenAIHandler) dispatchStream(
 			})
 			h.router.RecordResult(ch.Name(), true, latencyMs)
 			isSuccess := statusErr.Status >= 200 && statusErr.Status < 300
-			h.logUsage(ctx, ch.Name(), model, isSuccess, statusErr.Status, "", totalLatency, requestIP, true, endpoint, "")
+			h.logUsage(ctx, ch.Name(), model, isSuccess, statusErr.Status, "", totalLatency, requestIP, true, endpoint, "", nil)
 			return
 		}
 
 		// Transport-level failure.
 		h.router.RecordResult(ch.Name(), false, latencyMs)
 		errMsg := err.Error()
-		h.logUsage(ctx, ch.Name(), model, false, 0, errMsg, latencyMs, requestIP, false, endpoint, "")
+		h.logUsage(ctx, ch.Name(), model, false, 0, errMsg, latencyMs, requestIP, false, endpoint, "", nil)
 		chLog.Warn("channel stream failed, trying next", "err", err)
 		lastErr = err
 	}
@@ -357,7 +357,7 @@ func (h *OpenAIHandler) dispatchStream(
 	if lastErr != nil {
 		errMsg = lastErr.Error()
 	}
-	h.logUsage(ctx, lastChannel, model, false, http.StatusBadGateway, errMsg, totalLatency, requestIP, true, endpoint, "")
+	h.logUsage(ctx, lastChannel, model, false, http.StatusBadGateway, errMsg, totalLatency, requestIP, true, endpoint, "", nil)
 	h.writeOpenAIError(w, "All OpenAI image channels failed", "api_error", http.StatusBadGateway)
 }
 
@@ -556,7 +556,7 @@ func truncateBody(body []byte) string {
 
 // logUsage 记录 API Key 使用情况
 // updateStats 为 true 时更新 TotalSuccess/TotalFail，false 时只记录日志不更新统计
-func (h *OpenAIHandler) logUsage(ctx context.Context, channelName, model string, success bool, statusCode int, errorMsg string, latencyMs int64, requestIP string, updateStats bool, endpoint string, upstreamError string) {
+func (h *OpenAIHandler) logUsage(ctx context.Context, channelName, model string, success bool, statusCode int, errorMsg string, latencyMs int64, requestIP string, updateStats bool, endpoint string, upstreamError string, rawResp *core.OpenAIRawResponse) {
 	if h.usageLogger == nil {
 		return
 	}
@@ -609,6 +609,15 @@ func (h *OpenAIHandler) logUsage(ctx context.Context, channelName, model string,
 		LatencyMs:     latency,
 		RequestIP:     ip,
 		UpdateStats:   updateStats,
+	}
+
+	if rawResp != nil {
+		ttfb := int(rawResp.TTFBMs)
+		entry.UpstreamTTFBMs = &ttfb
+		bodyRead := int(rawResp.BodyReadMs)
+		entry.BodyReadMs = &bodyRead
+		respBytes := rawResp.ResponseBytes
+		entry.ResponseBytes = &respBytes
 	}
 	
 	h.usageLogger.Log(entry)

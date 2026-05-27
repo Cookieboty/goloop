@@ -101,7 +101,21 @@ export interface UsageLog {
   upstream_error?: string;
   latency_ms?: number;
   request_ip?: string;
+  upstream_ttfb_ms?: number;
+  body_read_ms?: number;
+  response_bytes?: number;
   created_at: string;
+}
+
+export interface LatencyStats {
+  total_requests: number;
+  success_count: number;
+  success_rate: number;
+  avg_latency_ms: number;
+  avg_ttfb_ms: number;
+  avg_body_read_ms: number;
+  p95_latency_ms: number;
+  avg_response_bytes: number;
 }
 
 // Request types
