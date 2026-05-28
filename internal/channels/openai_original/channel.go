@@ -80,13 +80,16 @@ func (ch *Channel) GenerateOpenAIRaw(ctx context.Context, contentType string, ra
 	var lastHeaders http.Header
 	var lastBody []byte
 	var ttfbMs, bodyReadMs int64
+	var retryCount int
+	totalStart := time.Now()
 
 	for attempt := 0; attempt <= ch.cfg.RetryAttempts; attempt++ {
 		if attempt > 0 {
-			slog.Warn("retrying on retriable status",
+			slog.Warn("openai_original: retrying",
 				"channel", ch.Name(), "endpoint", endpoint,
-				"status", lastStatus, "attempt", attempt,
-				"maxRetries", ch.cfg.RetryAttempts)
+				"attempt", attempt, "maxRetries", ch.cfg.RetryAttempts,
+				"failedStatus", lastStatus, "failedTTFBMs", ttfbMs,
+				"elapsedMs", time.Since(totalStart).Milliseconds())
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -105,6 +108,11 @@ func (ch *Channel) GenerateOpenAIRaw(ctx context.Context, contentType string, ra
 		resp, err := ch.HTTPClient.Do(httpReq)
 		ttfbMs = time.Since(start).Milliseconds()
 		if err != nil {
+			slog.Error("openai_original: request failed",
+				"channel", ch.Name(), "endpoint", endpoint,
+				"attempt", attempt, "ttfbMs", ttfbMs,
+				"elapsedMs", time.Since(totalStart).Milliseconds(),
+				"err", err)
 			return nil, fmt.Errorf("gpt-image: HTTP request failed: %w", err)
 		}
 
@@ -120,13 +128,25 @@ func (ch *Channel) GenerateOpenAIRaw(ctx context.Context, contentType string, ra
 		lastHeaders = resp.Header.Clone()
 		lastBody = data
 
-		if !ch.isRetryable(resp.StatusCode) {
-			break
+		if ch.isRetryable(resp.StatusCode) {
+			retryCount++
+			slog.Warn("openai_original: got retriable status",
+				"channel", ch.Name(), "endpoint", endpoint,
+				"attempt", attempt, "status", resp.StatusCode,
+				"ttfbMs", ttfbMs, "bodyLen", len(data),
+				"elapsedMs", time.Since(totalStart).Milliseconds())
+			continue
 		}
+		break
 	}
 
 	if lastStatus >= 200 && lastStatus < 300 {
 		success = true
+	}
+
+	retryMs := time.Since(totalStart).Milliseconds() - ttfbMs - bodyReadMs
+	if retryMs < 0 {
+		retryMs = 0
 	}
 
 	return &core.OpenAIRawResponse{
@@ -136,6 +156,8 @@ func (ch *Channel) GenerateOpenAIRaw(ctx context.Context, contentType string, ra
 		TTFBMs:        ttfbMs,
 		BodyReadMs:    bodyReadMs,
 		ResponseBytes: len(lastBody),
+		RetryCount:    retryCount,
+		RetryMs:       retryMs,
 	}, nil
 }
 
