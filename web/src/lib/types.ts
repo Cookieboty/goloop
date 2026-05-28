@@ -104,6 +104,7 @@ export interface UsageLog {
   upstream_ttfb_ms?: number;
   body_read_ms?: number;
   response_bytes?: number;
+  should_count: boolean;
   created_at: string;
 }
 

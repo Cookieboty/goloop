@@ -223,10 +223,12 @@ export default function LatencyPage() {
                 <th className="px-4 py-3">模型</th>
                 <th className="px-4 py-3">渠道</th>
                 <th className="px-4 py-3">状态</th>
+                <th className="px-4 py-3 text-center">计入</th>
                 <th className="px-4 py-3 text-right">TTFB</th>
                 <th className="px-4 py-3 text-right">Body 下载</th>
                 <th className="px-4 py-3 text-right">响应大小</th>
                 <th className="px-4 py-3 text-right">总延迟</th>
+                <th className="px-4 py-3 text-right">差值</th>
               </tr>
             </thead>
             <tbody>
@@ -248,6 +250,13 @@ export default function LatencyPage() {
                       <span className="inline-block w-2 h-2 rounded-full bg-red-500" title={log.error_message}></span>
                     )}
                   </td>
+                  <td className="px-4 py-2.5 text-center text-xs">
+                    {log.should_count ? (
+                      <span className="text-green-400">✓</span>
+                    ) : (
+                      <span className="text-gray-600">-</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2.5 text-right font-mono text-xs text-blue-300">
                     {formatMs(log.upstream_ttfb_ms)}
                   </td>
@@ -260,11 +269,18 @@ export default function LatencyPage() {
                   <td className="px-4 py-2.5 text-right font-mono text-xs text-yellow-300">
                     {formatMs(log.latency_ms)}
                   </td>
+                  <td className="px-4 py-2.5 text-right font-mono text-xs">
+                    {(() => {
+                      const gap = (log.latency_ms ?? 0) - (log.upstream_ttfb_ms ?? 0) - (log.body_read_ms ?? 0);
+                      if (!log.latency_ms || !log.upstream_ttfb_ms) return <span className="text-gray-600">-</span>;
+                      return <span className={gap > 5000 ? "text-red-400" : "text-gray-500"}>{formatMs(gap)}</span>;
+                    })()}
+                  </td>
                 </tr>
               ))}
               {logs.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={10} className="px-4 py-8 text-center text-gray-500">
                     暂无数据
                   </td>
                 </tr>
