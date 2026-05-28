@@ -618,6 +618,12 @@ func (h *OpenAIHandler) logUsage(ctx context.Context, channelName, model string,
 		entry.BodyReadMs = &bodyRead
 		respBytes := rawResp.ResponseBytes
 		entry.ResponseBytes = &respBytes
+		if rawResp.RetryCount > 0 {
+			rc := rawResp.RetryCount
+			entry.RetryCount = &rc
+			rm := int(rawResp.RetryMs)
+			entry.RetryMs = &rm
+		}
 	}
 	
 	h.usageLogger.Log(entry)

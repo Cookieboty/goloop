@@ -20,6 +20,8 @@ type RawResult struct {
 	TTFBMs        int64 // time from request sent to response headers received
 	BodyReadMs    int64 // time to read the entire response body
 	ResponseBytes int   // len(Body)
+	RetryCount    int   // number of retries before success (0 = first attempt succeeded)
+	RetryMs       int64 // total wall time spent on failed attempts + delays
 }
 
 // RawBodyGenerator is an optional interface for channels that perform
@@ -58,6 +60,8 @@ type OpenAIRawResponse struct {
 	TTFBMs        int64 // time from request sent to response headers received
 	BodyReadMs    int64 // time to read the entire response body
 	ResponseBytes int   // len(Body)
+	RetryCount    int   // number of retries before success
+	RetryMs       int64 // total wall time spent on failed attempts + delays
 }
 
 // OpenAIRawGenerator is an optional interface for channels that perform

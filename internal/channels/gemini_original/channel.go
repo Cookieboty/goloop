@@ -69,13 +69,17 @@ func (ch *Channel) GenerateRaw(ctx context.Context, rawBody []byte, modelName st
 	var lastStatus int
 	var lastBody []byte
 	var ttfbMs, bodyReadMs int64
+	var retryCount int
+	totalStart := time.Now()
 
 	for attempt := 0; attempt <= ch.cfg.RetryAttempts; attempt++ {
 		if attempt > 0 {
-			slog.Warn("retrying on retriable status",
+			slog.Warn("gemini_original: retrying",
 				"channel", ch.Name(), "model", modelName,
-				"status", lastStatus, "attempt", attempt,
-				"maxRetries", ch.cfg.RetryAttempts)
+				"attempt", attempt, "maxRetries", ch.cfg.RetryAttempts,
+				"failedStatus", lastStatus,
+				"failedTTFBMs", ttfbMs,
+				"elapsedMs", time.Since(totalStart).Milliseconds())
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -94,6 +98,11 @@ func (ch *Channel) GenerateRaw(ctx context.Context, rawBody []byte, modelName st
 		resp, err := ch.HTTPClient.Do(httpReq)
 		ttfbMs = time.Since(start).Milliseconds()
 		if err != nil {
+			slog.Error("gemini_original: request failed",
+				"channel", ch.Name(), "model", modelName,
+				"attempt", attempt, "ttfbMs", ttfbMs,
+				"elapsedMs", time.Since(totalStart).Milliseconds(),
+				"err", err)
 			return nil, fmt.Errorf("gemini: HTTP request failed: %w", err)
 		}
 
@@ -108,9 +117,27 @@ func (ch *Channel) GenerateRaw(ctx context.Context, rawBody []byte, modelName st
 		lastStatus = resp.StatusCode
 		lastBody = data
 
-		if !ch.isRetryable(resp.StatusCode) {
-			break
+		if ch.isRetryable(resp.StatusCode) {
+			retryCount++
+			slog.Warn("gemini_original: got retriable status",
+				"channel", ch.Name(), "model", modelName,
+				"attempt", attempt, "status", resp.StatusCode,
+				"ttfbMs", ttfbMs, "bodyReadMs", bodyReadMs,
+				"bodyLen", len(data),
+				"elapsedMs", time.Since(totalStart).Milliseconds())
+			continue
 		}
+		break
+	}
+
+	totalMs := time.Since(totalStart).Milliseconds()
+	if totalMs-ttfbMs-bodyReadMs > 5000 {
+		slog.Warn("gemini_original: large gap detected",
+			"channel", ch.Name(), "model", modelName,
+			"finalStatus", lastStatus,
+			"ttfbMs", ttfbMs, "bodyReadMs", bodyReadMs,
+			"totalMs", totalMs,
+			"gapMs", totalMs-ttfbMs-bodyReadMs)
 	}
 
 	if lastStatus != http.StatusOK {
@@ -118,11 +145,17 @@ func (ch *Channel) GenerateRaw(ctx context.Context, rawBody []byte, modelName st
 	}
 
 	success = true
+	retryMs := time.Since(totalStart).Milliseconds() - ttfbMs - bodyReadMs
+	if retryMs < 0 {
+		retryMs = 0
+	}
 	return &core.RawResult{
 		Body:          lastBody,
 		TTFBMs:        ttfbMs,
 		BodyReadMs:    bodyReadMs,
 		ResponseBytes: len(lastBody),
+		RetryCount:    retryCount,
+		RetryMs:       retryMs,
 	}, nil
 }
 

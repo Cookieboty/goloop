@@ -84,6 +84,8 @@ type UsageLog struct {
 	UpstreamTTFBMs *int    `json:"upstream_ttfb_ms,omitempty"`
 	BodyReadMs     *int    `json:"body_read_ms,omitempty"`
 	ResponseBytes  *int    `json:"response_bytes,omitempty"`
+	RetryCount     *int    `json:"retry_count,omitempty"`
+	RetryMs        *int    `json:"retry_ms,omitempty"`
 	ShouldCount   bool     `gorm:"default:false;index:idx_should_count" json:"should_count"` // 是否计入全局统计（最终成功/失败）
 	CreatedAt   time.Time  `gorm:"index:idx_created;index:idx_apikey_created" json:"created_at"`
 	

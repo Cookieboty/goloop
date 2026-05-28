@@ -626,6 +626,12 @@ func (h *GeminiHandler) logUsage(ctx context.Context, channelName, model string,
 		entry.BodyReadMs = &bodyRead
 		respBytes := rawResult.ResponseBytes
 		entry.ResponseBytes = &respBytes
+		if rawResult.RetryCount > 0 {
+			rc := rawResult.RetryCount
+			entry.RetryCount = &rc
+			rm := int(rawResult.RetryMs)
+			entry.RetryMs = &rm
+		}
 	}
 	
 	h.usageLogger.Log(entry)

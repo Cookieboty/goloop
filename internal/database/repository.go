@@ -263,6 +263,8 @@ type LogEntry struct {
 	UpstreamTTFBMs *int
 	BodyReadMs     *int
 	ResponseBytes  *int
+	RetryCount     *int
+	RetryMs        *int
 	UpdateStats    bool // 是否更新 API Key 的统计数据（TotalSuccess/TotalFail）
 }
 
@@ -288,6 +290,8 @@ func (r *Repository) BatchInsertUsageLogs(entries []LogEntry) error {
 			UpstreamTTFBMs: entry.UpstreamTTFBMs,
 			BodyReadMs:     entry.BodyReadMs,
 			ResponseBytes:  entry.ResponseBytes,
+			RetryCount:     entry.RetryCount,
+			RetryMs:        entry.RetryMs,
 			ShouldCount:    entry.UpdateStats,
 			CreatedAt:      time.Now(),
 		}

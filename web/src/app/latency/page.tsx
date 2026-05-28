@@ -228,7 +228,7 @@ export default function LatencyPage() {
                 <th className="px-4 py-3 text-right">Body 下载</th>
                 <th className="px-4 py-3 text-right">响应大小</th>
                 <th className="px-4 py-3 text-right">总延迟</th>
-                <th className="px-4 py-3 text-right">差值</th>
+                <th className="px-4 py-3 text-right">重试</th>
               </tr>
             </thead>
             <tbody>
@@ -270,11 +270,16 @@ export default function LatencyPage() {
                     {formatMs(log.latency_ms)}
                   </td>
                   <td className="px-4 py-2.5 text-right font-mono text-xs">
-                    {(() => {
-                      const gap = (log.latency_ms ?? 0) - (log.upstream_ttfb_ms ?? 0) - (log.body_read_ms ?? 0);
-                      if (!log.latency_ms || !log.upstream_ttfb_ms) return <span className="text-gray-600">-</span>;
-                      return <span className={gap > 5000 ? "text-red-400" : "text-gray-500"}>{formatMs(gap)}</span>;
-                    })()}
+                    {log.retry_count != null && log.retry_count > 0 ? (
+                      <span className="text-red-400">{log.retry_count}× {formatMs(log.retry_ms)}</span>
+                    ) : (
+                      (() => {
+                        const gap = (log.latency_ms ?? 0) - (log.upstream_ttfb_ms ?? 0) - (log.body_read_ms ?? 0);
+                        if (!log.latency_ms || !log.upstream_ttfb_ms) return <span className="text-gray-600">-</span>;
+                        if (gap > 5000) return <span className="text-orange-400">{formatMs(gap)}</span>;
+                        return <span className="text-gray-600">-</span>;
+                      })()
+                    )}
                   </td>
                 </tr>
               ))}
