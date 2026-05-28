@@ -5,12 +5,20 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"goloop/internal/core"
 	"goloop/internal/model"
 )
+
+// Config holds retry settings for transient upstream errors.
+type Config struct {
+	RetryStatusCodes map[int]struct{}
+	RetryAttempts    int
+	RetryDelay       time.Duration
+}
 
 // Channel implements core.Channel, core.RawBodyGenerator, and
 // core.RawStreamGenerator for a Google-native Gemini upstream.
@@ -25,6 +33,7 @@ import (
 // No other files need to change.
 type Channel struct {
 	core.BaseChannel // provides Name/Weight/IsAvailable/HealthScore/Admin/GetAccountPool
+	cfg              Config
 }
 
 // Compile-time assertions.
@@ -33,14 +42,18 @@ var _ core.RawStreamGenerator = (*Channel)(nil)
 
 // NewChannel creates a Gemini native pass-through channel.
 // name is the unique channel identifier (e.g. "gemini-direct").
-func NewChannel(name, baseURL string, weight int, pool *core.DefaultAccountPool, timeout time.Duration) *Channel {
+func NewChannel(name, baseURL string, weight int, pool *core.DefaultAccountPool, timeout time.Duration, cfg Config) *Channel {
 	return &Channel{
 		BaseChannel: core.NewBaseChannel(name, "gemini_original", baseURL, weight, pool, timeout),
+		cfg:         cfg,
 	}
 }
 
 // GenerateRaw forwards rawBody verbatim to the upstream Gemini API and returns
 // the upstream response bytes unmodified. It implements core.RawBodyGenerator.
+//
+// If the upstream returns a status in RetryStatusCodes, the request is retried
+// up to RetryAttempts times with RetryDelay between attempts.
 func (ch *Channel) GenerateRaw(ctx context.Context, rawBody []byte, modelName string) (*core.RawResult, error) {
 	acc, err := ch.Pool.Select()
 	if err != nil {
@@ -52,38 +65,64 @@ func (ch *Channel) GenerateRaw(ctx context.Context, rawBody []byte, modelName st
 	defer func() { ch.Pool.Return(acc, success) }()
 
 	url := ch.BaseURL + "/v1beta/models/" + modelName + ":generateContent"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawBody))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	// Google native API uses x-goog-api-key header for authentication.
-	httpReq.Header.Set("x-goog-api-key", acc.APIKey())
 
-	start := time.Now()
-	resp, err := ch.HTTPClient.Do(httpReq)
-	ttfbMs := time.Since(start).Milliseconds()
-	if err != nil {
-		return nil, fmt.Errorf("gemini: HTTP request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	var lastStatus int
+	var lastBody []byte
+	var ttfbMs, bodyReadMs int64
 
-	bodyStart := time.Now()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20)) // 32 MiB limit
-	bodyReadMs := time.Since(bodyStart).Milliseconds()
-	if err != nil {
-		return nil, fmt.Errorf("gemini: read response: %w", err)
+	for attempt := 0; attempt <= ch.cfg.RetryAttempts; attempt++ {
+		if attempt > 0 {
+			slog.Warn("retrying on retriable status",
+				"channel", ch.Name(), "model", modelName,
+				"status", lastStatus, "attempt", attempt,
+				"maxRetries", ch.cfg.RetryAttempts)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(ch.cfg.RetryDelay):
+			}
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawBody))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("x-goog-api-key", acc.APIKey())
+
+		start := time.Now()
+		resp, err := ch.HTTPClient.Do(httpReq)
+		ttfbMs = time.Since(start).Milliseconds()
+		if err != nil {
+			return nil, fmt.Errorf("gemini: HTTP request failed: %w", err)
+		}
+
+		bodyStart := time.Now()
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+		bodyReadMs = time.Since(bodyStart).Milliseconds()
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("gemini: read response: %w", readErr)
+		}
+
+		lastStatus = resp.StatusCode
+		lastBody = data
+
+		if !ch.isRetryable(resp.StatusCode) {
+			break
+		}
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gemini: HTTP %d: %s", resp.StatusCode, string(data))
+
+	if lastStatus != http.StatusOK {
+		return nil, fmt.Errorf("gemini: HTTP %d: %s", lastStatus, string(lastBody))
 	}
 
 	success = true
 	return &core.RawResult{
-		Body:          data,
+		Body:          lastBody,
 		TTFBMs:        ttfbMs,
 		BodyReadMs:    bodyReadMs,
-		ResponseBytes: len(data),
+		ResponseBytes: len(lastBody),
 	}, nil
 }
 
@@ -95,6 +134,9 @@ func (ch *Channel) GenerateRaw(ctx context.Context, rawBody []byte, modelName st
 // StreamRaw returns a non-nil error only if the upstream request itself fails
 // before any bytes are written. Once streaming has started, errors mid-stream
 // are silently dropped (the SSE connection simply closes).
+//
+// If the upstream returns a retriable status (pre-commit), the request is retried
+// up to RetryAttempts times with RetryDelay between attempts.
 func (ch *Channel) StreamRaw(ctx context.Context, rawBody []byte, modelName string, w core.ResponseWriter) error {
 	acc, err := ch.Pool.Select()
 	if err != nil {
@@ -106,16 +148,43 @@ func (ch *Channel) StreamRaw(ctx context.Context, rawBody []byte, modelName stri
 	defer func() { ch.Pool.Return(acc, success) }()
 
 	url := ch.BaseURL + "/v1beta/models/" + modelName + ":streamGenerateContent?alt=sse"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawBody))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-goog-api-key", acc.APIKey())
 
-	resp, err := ch.HTTPClient.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("gemini: stream request failed: %w", err)
+	var resp *http.Response
+	for attempt := 0; attempt <= ch.cfg.RetryAttempts; attempt++ {
+		if attempt > 0 {
+			slog.Warn("retrying on retriable status (stream)",
+				"channel", ch.Name(), "model", modelName,
+				"status", resp.StatusCode, "attempt", attempt,
+				"maxRetries", ch.cfg.RetryAttempts)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(ch.cfg.RetryDelay):
+			}
+		}
+
+		httpReq, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawBody))
+		if reqErr != nil {
+			return reqErr
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("x-goog-api-key", acc.APIKey())
+
+		resp, err = ch.HTTPClient.Do(httpReq)
+		if err != nil {
+			return fmt.Errorf("gemini: stream request failed: %w", err)
+		}
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			break
+		}
+
+		if !ch.isRetryable(resp.StatusCode) {
+			break
+		}
+
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		resp.Body.Close()
 	}
 	defer resp.Body.Close()
 
@@ -182,3 +251,8 @@ func (ch *Channel) Probe(account core.Account) bool {
 
 // SubmitTask and PollTask are NOT overridden; BaseChannel returns
 // core.ErrNotSupported for both, causing the handler to use GenerateRaw instead.
+
+func (ch *Channel) isRetryable(statusCode int) bool {
+	_, ok := ch.cfg.RetryStatusCodes[statusCode]
+	return ok && ch.cfg.RetryAttempts > 0
+}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -19,7 +20,10 @@ import (
 type Config struct {
 	// ProbeModel is the model name used for lightweight health probes.
 	// Defaults to "gpt-4o-mini" if empty.
-	ProbeModel string
+	ProbeModel       string
+	RetryStatusCodes map[int]struct{}
+	RetryAttempts    int
+	RetryDelay       time.Duration
 }
 
 // Channel implements core.Channel for any OpenAI-compatible upstream API.
@@ -51,6 +55,9 @@ func NewChannel(name, baseURL string, weight int, pool *core.DefaultAccountPool,
 
 // Generate calls the OpenAI-compatible /v1/chat/completions endpoint
 // synchronously and converts the response to Google format.
+//
+// If the upstream returns a status in RetryStatusCodes, the request is retried
+// up to RetryAttempts times with RetryDelay between attempts.
 func (ch *Channel) Generate(ctx context.Context, req *model.GoogleRequest, modelName string) (*model.GoogleResponse, error) {
 	acc, err := ch.Pool.Select()
 	if err != nil {
@@ -67,30 +74,55 @@ func (ch *Channel) Generate(ctx context.Context, req *model.GoogleRequest, model
 		return nil, fmt.Errorf("subrouter: marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		ch.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+acc.APIKey())
+	var lastStatus int
+	var lastBody []byte
 
-	resp, err := ch.HTTPClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("subrouter: HTTP request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	for attempt := 0; attempt <= ch.cfg.RetryAttempts; attempt++ {
+		if attempt > 0 {
+			slog.Warn("retrying on retriable status",
+				"channel", ch.Name(), "model", modelName,
+				"status", lastStatus, "attempt", attempt,
+				"maxRetries", ch.cfg.RetryAttempts)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(ch.cfg.RetryDelay):
+			}
+		}
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20)) // 4 MiB limit
-	if err != nil {
-		return nil, fmt.Errorf("subrouter: read response: %w", err)
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			ch.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+acc.APIKey())
+
+		resp, err := ch.HTTPClient.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("subrouter: HTTP request failed: %w", err)
+		}
+
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("subrouter: read response: %w", readErr)
+		}
+
+		lastStatus = resp.StatusCode
+		lastBody = data
+
+		if !ch.isRetryable(resp.StatusCode) {
+			break
+		}
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("subrouter: HTTP %d: %s", resp.StatusCode, string(data))
+
+	if lastStatus != http.StatusOK {
+		return nil, fmt.Errorf("subrouter: HTTP %d: %s", lastStatus, string(lastBody))
 	}
 
 	var chatResp ChatResponse
-	if err := json.Unmarshal(data, &chatResp); err != nil {
+	if err := json.Unmarshal(lastBody, &chatResp); err != nil {
 		return nil, fmt.Errorf("subrouter: unmarshal response: %w", err)
 	}
 	if len(chatResp.Choices) == 0 {
@@ -143,6 +175,9 @@ func (ch *Channel) Probe(account core.Account) bool {
 //
 // Stream returns a non-nil error only if the upstream request itself fails
 // before any bytes are written to w.
+//
+// If the upstream returns a retriable status (pre-commit), the request is retried
+// up to RetryAttempts times with RetryDelay between attempts.
 func (ch *Channel) Stream(ctx context.Context, req *model.GoogleRequest, modelName string, w core.ResponseWriter) error {
 	acc, err := ch.Pool.Select()
 	if err != nil {
@@ -160,18 +195,44 @@ func (ch *Channel) Stream(ctx context.Context, req *model.GoogleRequest, modelNa
 		return fmt.Errorf("subrouter: marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		ch.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+acc.APIKey())
-	httpReq.Header.Set("Accept", "text/event-stream")
+	var resp *http.Response
+	for attempt := 0; attempt <= ch.cfg.RetryAttempts; attempt++ {
+		if attempt > 0 {
+			slog.Warn("retrying on retriable status (stream)",
+				"channel", ch.Name(), "model", modelName,
+				"status", resp.StatusCode, "attempt", attempt,
+				"maxRetries", ch.cfg.RetryAttempts)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(ch.cfg.RetryDelay):
+			}
+		}
 
-	resp, err := ch.HTTPClient.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("subrouter: stream request failed: %w", err)
+		httpReq, reqErr := http.NewRequestWithContext(ctx, http.MethodPost,
+			ch.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
+		if reqErr != nil {
+			return reqErr
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+acc.APIKey())
+		httpReq.Header.Set("Accept", "text/event-stream")
+
+		resp, err = ch.HTTPClient.Do(httpReq)
+		if err != nil {
+			return fmt.Errorf("subrouter: stream request failed: %w", err)
+		}
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			break
+		}
+
+		if !ch.isRetryable(resp.StatusCode) {
+			break
+		}
+
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		resp.Body.Close()
 	}
 	defer resp.Body.Close()
 
@@ -291,3 +352,8 @@ var _ core.StreamGenerator = (*Channel)(nil)
 
 // SubmitTask and PollTask are NOT overridden; BaseChannel returns
 // core.ErrNotSupported for both, causing the handler to use Generate/Stream instead.
+
+func (ch *Channel) isRetryable(statusCode int) bool {
+	_, ok := ch.cfg.RetryStatusCodes[statusCode]
+	return ok && ch.cfg.RetryAttempts > 0
+}

@@ -20,7 +20,7 @@ func newTestPool(apiKey string) *core.DefaultAccountPool {
 }
 
 func TestChannel_ImplementsRawBodyGenerator(t *testing.T) {
-	ch := NewChannel("gemini-test", "https://example.com", 100, newTestPool("key"), 10*time.Second)
+	ch := NewChannel("gemini-test", "https://example.com", 100, newTestPool("key"), 10*time.Second, Config{})
 	var _ core.RawBodyGenerator = ch // compile-time assertion already in channel.go
 	if _, ok := interface{}(ch).(core.RawBodyGenerator); !ok {
 		t.Fatal("Channel does not implement core.RawBodyGenerator")
@@ -52,7 +52,7 @@ func TestGenerateRaw_PassthroughBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ch := NewChannel("gemini-test", server.URL, 100, newTestPool(apiKey), 10*time.Second)
+	ch := NewChannel("gemini-test", server.URL, 100, newTestPool(apiKey), 10*time.Second, Config{})
 
 	reqBody := []byte(`{"contents":[{"parts":[{"text":"画一只猫"}]}],"safetySettings":[{"category":"HARM_CATEGORY_HARASSMENT","threshold":"OFF"}],"generationConfig":{"responseModalities":["image"],"imageConfig":{"aspectRatio":"9:16","imageSize":"2K"}}}`)
 
@@ -95,7 +95,7 @@ func TestGenerateRaw_URLConstruction(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ch := NewChannel("gemini-test", server.URL, 100, newTestPool("key"), 10*time.Second)
+	ch := NewChannel("gemini-test", server.URL, 100, newTestPool("key"), 10*time.Second, Config{})
 	_, err := ch.GenerateRaw(context.Background(), []byte(`{}`), "gemini-2.5-flash-image")
 	if err != nil {
 		t.Fatalf("GenerateRaw error: %v", err)
@@ -115,7 +115,7 @@ func TestGenerateRaw_UpstreamError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ch := NewChannel("gemini-test", server.URL, 100, newTestPool("bad-key"), 10*time.Second)
+	ch := NewChannel("gemini-test", server.URL, 100, newTestPool("bad-key"), 10*time.Second, Config{})
 	_, err := ch.GenerateRaw(context.Background(), []byte(`{}`), "gemini-3.1-flash-image-preview")
 	if err == nil {
 		t.Fatal("expected error for HTTP 401, got nil")
@@ -124,7 +124,7 @@ func TestGenerateRaw_UpstreamError(t *testing.T) {
 
 func TestGenerateRaw_NoAccount(t *testing.T) {
 	emptyPool := core.NewDefaultAccountPool()
-	ch := NewChannel("gemini-test", "https://example.com", 100, emptyPool, 10*time.Second)
+	ch := NewChannel("gemini-test", "https://example.com", 100, emptyPool, 10*time.Second, Config{})
 	_, err := ch.GenerateRaw(context.Background(), []byte(`{}`), "gemini-3.1-flash-image-preview")
 	if err == nil {
 		t.Fatal("expected error when pool is empty, got nil")
@@ -151,7 +151,7 @@ func (f *fakeResponseWriter) WriteHeader(code int)        { f.statusCode = code 
 func (f *fakeResponseWriter) Flush()                      { f.flushCount++ }
 
 func TestChannel_ImplementsRawStreamGenerator(t *testing.T) {
-	ch := NewChannel("gemini-test", "https://example.com", 100, newTestPool("key"), 10*time.Second)
+	ch := NewChannel("gemini-test", "https://example.com", 100, newTestPool("key"), 10*time.Second, Config{})
 	if _, ok := interface{}(ch).(core.RawStreamGenerator); !ok {
 		t.Fatal("Channel does not implement core.RawStreamGenerator")
 	}
@@ -173,7 +173,7 @@ func TestStreamRaw_PipesSSEChunks(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ch := NewChannel("gemini-test", server.URL, 100, newTestPool("key"), 10*time.Second)
+	ch := NewChannel("gemini-test", server.URL, 100, newTestPool("key"), 10*time.Second, Config{})
 	fw := newFakeResponseWriter()
 
 	err := ch.StreamRaw(context.Background(), []byte(`{}`), "gemini-2.5-flash", fw)
@@ -201,7 +201,7 @@ func TestStreamRaw_UpstreamError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ch := NewChannel("gemini-test", server.URL, 100, newTestPool("bad-key"), 10*time.Second)
+	ch := NewChannel("gemini-test", server.URL, 100, newTestPool("bad-key"), 10*time.Second, Config{})
 	fw := newFakeResponseWriter()
 	err := ch.StreamRaw(context.Background(), []byte(`{}`), "gemini-2.5-flash", fw)
 	if err == nil {
@@ -219,7 +219,7 @@ func TestProbe_HealthCheck(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ch := NewChannel("gemini-test", server.URL, 100, newTestPool("key"), 10*time.Second)
+	ch := NewChannel("gemini-test", server.URL, 100, newTestPool("key"), 10*time.Second, Config{})
 	pool := ch.Pool
 	accounts := pool.List()
 	if len(accounts) == 0 {

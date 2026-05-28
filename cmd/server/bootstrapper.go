@@ -110,7 +110,10 @@ func (b *ChannelBootstrapper) registerChannel(name string, chCfg *core.ChannelCo
 			probeModel = "gpt-4o-mini"
 		}
 		subCh := gemini_openai.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, timeout, gemini_openai.Config{
-			ProbeModel: probeModel,
+			ProbeModel:       probeModel,
+			RetryStatusCodes: b.openAIRetryCfg.RetryStatusCodes,
+			RetryAttempts:    b.openAIRetryCfg.RetryAttempts,
+			RetryDelay:       b.openAIRetryCfg.RetryDelay,
 		})
 		b.registry.Register(subCh)
 		slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
@@ -124,7 +127,11 @@ func (b *ChannelBootstrapper) registerChannel(name string, chCfg *core.ChannelCo
 		if timeout == 0 {
 			timeout = 120 * time.Second
 		}
-		gemCh := gemini_original.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, timeout)
+		gemCh := gemini_original.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, timeout, gemini_original.Config{
+			RetryStatusCodes: b.openAIRetryCfg.RetryStatusCodes,
+			RetryAttempts:    b.openAIRetryCfg.RetryAttempts,
+			RetryDelay:       b.openAIRetryCfg.RetryDelay,
+		})
 		b.registry.Register(gemCh)
 		slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
 
