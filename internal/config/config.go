@@ -16,11 +16,27 @@ type Config struct {
 	RateLimit     RateLimitConfig
 	Redis         RedisConfig
 	OpenAIRetry   OpenAIRetryConfig
+	GeminiRetry   GeminiRetryConfig
 	AdminPassword string
 	DatabaseURL   string
+
+	// OpenAIFallbackStatusCodes lists upstream statuses that trigger a switch to
+	// the next channel (cross-channel fallback) WITHOUT in-channel retry, and
+	// without counting against channel health. Distinct from OpenAIRetry.StatusCodes.
+	OpenAIFallbackStatusCodes []int
 }
 
 type OpenAIRetryConfig struct {
+	StatusCodes []int
+	Attempts    int
+	Delay       time.Duration
+}
+
+// GeminiRetryConfig governs in-channel retry behaviour for Gemini upstream
+// channels (gemini_original / gemini_openai). It is intentionally separated
+// from OpenAIRetryConfig so each provider family can be tuned independently
+// (e.g. different attempt counts for 429 RESOURCE_EXHAUSTED).
+type GeminiRetryConfig struct {
 	StatusCodes []int
 	Attempts    int
 	Delay       time.Duration
@@ -180,6 +196,12 @@ func Load() (*Config, error) {
 			Attempts:    getEnvInt("OPENAI_RETRY_ATTEMPTS", 5),
 			Delay:       getEnvDuration("OPENAI_RETRY_DELAY", "2s"),
 		},
+		GeminiRetry: GeminiRetryConfig{
+			StatusCodes: getEnvIntSlice("GEMINI_RETRY_STATUS_CODES", "403,502,524"),
+			Attempts:    getEnvInt("GEMINI_RETRY_ATTEMPTS", 5),
+			Delay:       getEnvDuration("GEMINI_RETRY_DELAY", "2s"),
+		},
+		OpenAIFallbackStatusCodes: getEnvIntSlice("OPENAI_FALLBACK_STATUS_CODES", "400"),
 	}
 
 	if err := validate(cfg); err != nil {

@@ -32,6 +32,7 @@ type GeminiHandler struct {
 	respTransformer     *transformer.ResponseTransformer
 	maxRequestBodyBytes int64
 	usageLogger         *core.UsageLogger
+	fallbackCodes       map[int]struct{}
 }
 
 func NewGeminiHandler(
@@ -44,6 +45,7 @@ func NewGeminiHandler(
 	respTransformer *transformer.ResponseTransformer,
 	maxRequestBodyBytes int64,
 	usageLogger *core.UsageLogger,
+	fallbackCodes map[int]struct{},
 ) *GeminiHandler {
 	if maxRequestBodyBytes <= 0 {
 		maxRequestBodyBytes = 50 * 1024 * 1024 // 50MB default
@@ -58,6 +60,7 @@ func NewGeminiHandler(
 		respTransformer:     respTransformer,
 		maxRequestBodyBytes: maxRequestBodyBytes,
 		usageLogger:         usageLogger,
+		fallbackCodes:       fallbackCodes,
 	}
 }
 
@@ -175,7 +178,9 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 				}
 				latency := time.Since(start).Milliseconds()
 				totalLatency += latency
-				h.router.RecordResult(candidate.Name(), false, latency)
+				if shouldRecordChannelFailure(upstreamStatus(err), nil, h.fallbackCodes) {
+					h.router.RecordResult(candidate.Name(), false, latency)
+				}
 				// 中间渠道失败 - 记录日志但不更新统计
 				errMsg := ""
 				if err != nil {
@@ -202,7 +207,9 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 				}
 				latency := time.Since(start).Milliseconds()
 				totalLatency += latency
-				h.router.RecordResult(candidate.Name(), false, latency)
+				if shouldRecordChannelFailure(upstreamStatus(err), nil, h.fallbackCodes) {
+					h.router.RecordResult(candidate.Name(), false, latency)
+				}
 				// 中间渠道失败 - 记录日志但不更新统计
 				errMsg := ""
 				if err != nil {
@@ -229,7 +236,9 @@ func (h *GeminiHandler) handleGenerateContentStreaming(w http.ResponseWriter, r 
 			}
 			latency := time.Since(start).Milliseconds()
 			totalLatency += latency
-			h.router.RecordResult(candidate.Name(), false, 0)
+			if shouldRecordChannelFailure(upstreamStatus(submitErr), nil, h.fallbackCodes) {
+				h.router.RecordResult(candidate.Name(), false, 0)
+			}
 			// 中间渠道失败 - 记录日志但不更新统计
 			errMsg := ""
 			if submitErr != nil {
@@ -456,7 +465,9 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 				lastErr = err
 				break
 			}
-			h.router.RecordResult(ch.Name(), false, latency)
+			if shouldRecordChannelFailure(upstreamStatus(err), nil, h.fallbackCodes) {
+				h.router.RecordResult(ch.Name(), false, latency)
+			}
 			// 中间渠道失败 - 记录日志但不更新统计
 			errMsg := ""
 			if err != nil {
@@ -487,7 +498,9 @@ func (h *GeminiHandler) handleGenerateContent(w http.ResponseWriter, r *http.Req
 			break
 		}
 
-		h.router.RecordResult(ch.Name(), false, latency)
+		if shouldRecordChannelFailure(upstreamStatus(err), nil, h.fallbackCodes) {
+			h.router.RecordResult(ch.Name(), false, latency)
+		}
 		// 中间渠道失败 - 记录日志但不更新统计
 		errMsg := ""
 		if err != nil {
@@ -558,6 +571,16 @@ func writeGoogleError(w http.ResponseWriter, e model.GoogleError, httpCode int) 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(httpCode)
 	json.NewEncoder(w).Encode(e)
+}
+
+// upstreamStatus extracts the HTTP status from a *core.UpstreamStatusError,
+// returning 0 for any other error type (transport, transform, poll failures).
+func upstreamStatus(err error) int {
+	var se *core.UpstreamStatusError
+	if errors.As(err, &se) {
+		return se.Status
+	}
+	return 0
 }
 
 func generateRequestID() string {

@@ -34,6 +34,7 @@ type OpenAIHandler struct {
 	maxRequestBodyBytes int64
 	usageLogger         *core.UsageLogger
 	retryCodes          map[int]struct{}
+	fallbackCodes       map[int]struct{}
 }
 
 func NewOpenAIHandler(
@@ -44,6 +45,7 @@ func NewOpenAIHandler(
 	maxRequestBodyBytes int64,
 	usageLogger *core.UsageLogger,
 	retryCodes map[int]struct{},
+	fallbackCodes map[int]struct{},
 ) *OpenAIHandler {
 	if maxRequestBodyBytes <= 0 {
 		maxRequestBodyBytes = 50 * 1024 * 1024
@@ -56,6 +58,7 @@ func NewOpenAIHandler(
 		maxRequestBodyBytes: maxRequestBodyBytes,
 		usageLogger:         usageLogger,
 		retryCodes:          retryCodes,
+		fallbackCodes:       fallbackCodes,
 	}
 }
 
@@ -246,9 +249,8 @@ func (h *OpenAIHandler) dispatchNonStream(
 		}
 
 		// Upstream returned — decide whether to fall back.
-		if shouldFallbackOnStatus(resp.Status, h.retryCodes) {
-			_, isRetryCoded := h.retryCodes[resp.Status]
-			if !isRetryCoded {
+		if shouldFallbackOnStatus(resp.Status, h.retryCodes, h.fallbackCodes) {
+			if shouldRecordChannelFailure(resp.Status, h.retryCodes, h.fallbackCodes) {
 				h.router.RecordResult(ch.Name(), false, latencyMs)
 			}
 			h.logUsage(ctx, ch.Name(), model, false, resp.Status, statusTextFallback(resp.Status), latencyMs, requestIP, false, endpoint, truncateBody(resp.Body), resp)
@@ -324,9 +326,8 @@ func (h *OpenAIHandler) dispatchStream(
 
 		var statusErr *openai_original.UpstreamStatusError
 		if errors.As(err, &statusErr) {
-			if shouldFallbackOnStatus(statusErr.Status, h.retryCodes) {
-				_, isRetryCoded := h.retryCodes[statusErr.Status]
-				if !isRetryCoded {
+			if shouldFallbackOnStatus(statusErr.Status, h.retryCodes, h.fallbackCodes) {
+				if shouldRecordChannelFailure(statusErr.Status, h.retryCodes, h.fallbackCodes) {
 					h.router.RecordResult(ch.Name(), false, latencyMs)
 				}
 				h.logUsage(ctx, ch.Name(), model, false, statusErr.Status, statusTextFallback(statusErr.Status), latencyMs, requestIP, false, endpoint, truncateBody(statusErr.Body), nil)
@@ -421,9 +422,10 @@ func clientContentType(r *http.Request) string {
 }
 
 // shouldFallbackOnStatus decides whether a non-2xx upstream status warrants
-// trying the next channel. 5xx/429/408/401 are always channel-level issues;
-// additionally, any status code in the retryCodes set triggers fallback.
-func shouldFallbackOnStatus(status int, retryCodes map[int]struct{}) bool {
+// trying the next channel. Built-in channel-level faults (5xx/408/429/401)
+// always fall back; in addition, any status in retryCodes (in-channel retry)
+// or fallbackCodes (cross-channel fallback only) triggers fallback.
+func shouldFallbackOnStatus(status int, retryCodes, fallbackCodes map[int]struct{}) bool {
 	if status >= 500 {
 		return true
 	}
@@ -431,12 +433,28 @@ func shouldFallbackOnStatus(status int, retryCodes map[int]struct{}) bool {
 	case http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusUnauthorized:
 		return true
 	}
-	if retryCodes != nil {
-		if _, ok := retryCodes[status]; ok {
-			return true
-		}
+	if _, ok := retryCodes[status]; ok {
+		return true
+	}
+	if _, ok := fallbackCodes[status]; ok {
+		return true
 	}
 	return false
+}
+
+// shouldRecordChannelFailure reports whether a fallback-triggering status should
+// count against the channel's health. Codes already retried in-channel
+// (retryCodes) and fallback-only codes (fallbackCodes, e.g. 400 client faults)
+// are excluded so they don't unfairly degrade channel health; genuine
+// channel-level faults (5xx/408/429/401) are counted.
+func shouldRecordChannelFailure(status int, retryCodes, fallbackCodes map[int]struct{}) bool {
+	if _, ok := retryCodes[status]; ok {
+		return false
+	}
+	if _, ok := fallbackCodes[status]; ok {
+		return false
+	}
+	return true
 }
 
 type statusError int

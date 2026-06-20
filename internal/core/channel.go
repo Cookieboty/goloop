@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"goloop/internal/model"
@@ -93,6 +94,19 @@ type OpenAIRawGenerator interface {
 //     already committed; any fallback would corrupt the client's response.
 type OpenAIRawStreamGenerator interface {
 	StreamOpenAIRaw(ctx context.Context, contentType string, rawBody []byte, endpoint string, w ResponseWriter) error
+}
+
+// UpstreamStatusError is returned by Gemini-route channels when the upstream
+// responds with a non-2xx HTTP status. It carries the status code so the
+// handler can decide whether the failure counts against channel health
+// (e.g. fallback-only codes like 400 do not).
+type UpstreamStatusError struct {
+	Status int
+	Body   []byte
+}
+
+func (e *UpstreamStatusError) Error() string {
+	return fmt.Sprintf("upstream HTTP %d: %s", e.Status, string(e.Body))
 }
 
 // ResponseWriter is the subset of http.ResponseWriter used by streaming

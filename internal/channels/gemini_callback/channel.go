@@ -165,7 +165,7 @@ func (ch *Channel) SubmitTask(ctx context.Context, req *model.GoogleRequest, mod
 	if resp.StatusCode != http.StatusOK {
 		log.Warn("submitTask: HTTP error", "status", resp.StatusCode, "body", string(data))
 		ch.Pool.Return(acc, false)
-		return "", "", fmt.Errorf("kieai: HTTP %d: %s", resp.StatusCode, string(data))
+		return "", "", &core.UpstreamStatusError{Status: resp.StatusCode, Body: data}
 	}
 
 	var result struct {

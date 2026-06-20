@@ -14,7 +14,8 @@
       "Bash(git commit:*)",
       "Bash(go list:*)",
       "Bash(go clean:*)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(git stash *)"
     ]
   }
 }

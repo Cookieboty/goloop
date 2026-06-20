@@ -19,15 +19,17 @@ type ChannelBootstrapper struct {
 	configMgr      *core.ConfigManager
 	store          *storage.Store
 	openAIRetryCfg openai_original.Config
+	geminiRetryCfg gemini_original.Config
 }
 
 // NewChannelBootstrapper 创建通道引导服务
-func NewChannelBootstrapper(registry *core.PluginRegistry, configMgr *core.ConfigManager, store *storage.Store, openAIRetryCfg openai_original.Config) *ChannelBootstrapper {
+func NewChannelBootstrapper(registry *core.PluginRegistry, configMgr *core.ConfigManager, store *storage.Store, openAIRetryCfg openai_original.Config, geminiRetryCfg gemini_original.Config) *ChannelBootstrapper {
 	return &ChannelBootstrapper{
 		registry:       registry,
 		configMgr:      configMgr,
 		store:          store,
 		openAIRetryCfg: openAIRetryCfg,
+		geminiRetryCfg: geminiRetryCfg,
 	}
 }
 
@@ -111,9 +113,9 @@ func (b *ChannelBootstrapper) registerChannel(name string, chCfg *core.ChannelCo
 		}
 		subCh := gemini_openai.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, timeout, gemini_openai.Config{
 			ProbeModel:       probeModel,
-			RetryStatusCodes: b.openAIRetryCfg.RetryStatusCodes,
-			RetryAttempts:    b.openAIRetryCfg.RetryAttempts,
-			RetryDelay:       b.openAIRetryCfg.RetryDelay,
+			RetryStatusCodes: b.geminiRetryCfg.RetryStatusCodes,
+			RetryAttempts:    b.geminiRetryCfg.RetryAttempts,
+			RetryDelay:       b.geminiRetryCfg.RetryDelay,
 		})
 		b.registry.Register(subCh)
 		slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))
@@ -128,9 +130,9 @@ func (b *ChannelBootstrapper) registerChannel(name string, chCfg *core.ChannelCo
 			timeout = 120 * time.Second
 		}
 		gemCh := gemini_original.NewChannel(name, chCfg.BaseURL, chCfg.Weight, pool, timeout, gemini_original.Config{
-			RetryStatusCodes: b.openAIRetryCfg.RetryStatusCodes,
-			RetryAttempts:    b.openAIRetryCfg.RetryAttempts,
-			RetryDelay:       b.openAIRetryCfg.RetryDelay,
+			RetryStatusCodes: b.geminiRetryCfg.RetryStatusCodes,
+			RetryAttempts:    b.geminiRetryCfg.RetryAttempts,
+			RetryDelay:       b.geminiRetryCfg.RetryDelay,
 		})
 		b.registry.Register(gemCh)
 		slog.Info("channel registered", "name", name, "type", chCfg.Type, "accounts", len(chCfg.Accounts))

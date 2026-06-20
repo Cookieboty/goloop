@@ -14,6 +14,7 @@ import (
 
 	"goloop/internal/admin"
 	"goloop/internal/cache"
+	"goloop/internal/channels/gemini_original"
 	"goloop/internal/channels/openai_original"
 	"goloop/internal/config"
 	"goloop/internal/core"
@@ -111,19 +112,39 @@ func main() {
 	for _, code := range cfg.OpenAIRetry.StatusCodes {
 		retryCodes[code] = struct{}{}
 	}
+	// Build retry codes set from config for Gemini channels (independent of OpenAI).
+	geminiRetryCodes := make(map[int]struct{}, len(cfg.GeminiRetry.StatusCodes))
+	for _, code := range cfg.GeminiRetry.StatusCodes {
+		geminiRetryCodes[code] = struct{}{}
+	}
+	// Build fallback-only codes set: switch channel without in-channel retry.
+	fallbackCodes := make(map[int]struct{}, len(cfg.OpenAIFallbackStatusCodes))
+	for _, code := range cfg.OpenAIFallbackStatusCodes {
+		fallbackCodes[code] = struct{}{}
+	}
 	slog.Info("openai retry config",
 		"statusCodes", cfg.OpenAIRetry.StatusCodes,
 		"attempts", cfg.OpenAIRetry.Attempts,
-		"delay", cfg.OpenAIRetry.Delay)
+		"delay", cfg.OpenAIRetry.Delay,
+		"fallbackStatusCodes", cfg.OpenAIFallbackStatusCodes)
+	slog.Info("gemini retry config",
+		"statusCodes", cfg.GeminiRetry.StatusCodes,
+		"attempts", cfg.GeminiRetry.Attempts,
+		"delay", cfg.GeminiRetry.Delay)
 
 	openAIRetryCfg := openai_original.Config{
 		RetryStatusCodes: retryCodes,
 		RetryAttempts:    cfg.OpenAIRetry.Attempts,
 		RetryDelay:       cfg.OpenAIRetry.Delay,
 	}
+	geminiRetryCfg := gemini_original.Config{
+		RetryStatusCodes: geminiRetryCodes,
+		RetryAttempts:    cfg.GeminiRetry.Attempts,
+		RetryDelay:       cfg.GeminiRetry.Delay,
+	}
 
 	// Bootstrap all configured channels from database
-	bootstrapper := NewChannelBootstrapper(registry, configMgr, store, openAIRetryCfg)
+	bootstrapper := NewChannelBootstrapper(registry, configMgr, store, openAIRetryCfg, geminiRetryCfg)
 	if err := bootstrapper.Bootstrap(); err != nil {
 		slog.Error("failed to bootstrap channels", "err", err)
 		os.Exit(1)
@@ -191,8 +212,8 @@ func main() {
 	respTransformer := transformer.NewResponseTransformer(store)
 
 	// HTTP handlers
-	geminiHandler := handler.NewGeminiHandler(router, registry, issuer, store, taskManager, reqTransformer, respTransformer, cfg.Server.MaxRequestBodyBytes, usageLogger)
-	openaiHandler := handler.NewOpenAIHandler(router, registry, issuer, configMgr, cfg.Server.MaxRequestBodyBytes, usageLogger, retryCodes)
+	geminiHandler := handler.NewGeminiHandler(router, registry, issuer, store, taskManager, reqTransformer, respTransformer, cfg.Server.MaxRequestBodyBytes, usageLogger, fallbackCodes)
+	openaiHandler := handler.NewOpenAIHandler(router, registry, issuer, configMgr, cfg.Server.MaxRequestBodyBytes, usageLogger, retryCodes, fallbackCodes)
 	adminHandler := handler.NewAdminHandler(issuer, registry, health, cfg.AdminPassword, repo, redisClient, configMgr, bootstrapper)
 
 	// Business API routes (Gemini, OpenAI) - require API Key authentication

@@ -1,10 +1,14 @@
 package handler
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"goloop/internal/core"
 )
 
 func TestHandleHealth(t *testing.T) {
@@ -53,5 +57,20 @@ func TestIsStreamingRequest(t *testing.T) {
 		if got := isStreamingRequest(r); got != tt.expect {
 			t.Errorf("isStreamingRequest(%q) = %v, want %v", tt.accept, got, tt.expect)
 		}
+	}
+}
+
+func TestUpstreamStatus(t *testing.T) {
+	if got := upstreamStatus(&core.UpstreamStatusError{Status: 400, Body: []byte("bad request")}); got != 400 {
+		t.Errorf("upstreamStatus(UpstreamStatusError 400) = %d, want 400", got)
+	}
+	if got := upstreamStatus(fmt.Errorf("wrapped: %w", &core.UpstreamStatusError{Status: 429})); got != 429 {
+		t.Errorf("upstreamStatus(wrapped 429) = %d, want 429", got)
+	}
+	if got := upstreamStatus(errors.New("transport failure")); got != 0 {
+		t.Errorf("upstreamStatus(plain err) = %d, want 0", got)
+	}
+	if got := upstreamStatus(nil); got != 0 {
+		t.Errorf("upstreamStatus(nil) = %d, want 0", got)
 	}
 }

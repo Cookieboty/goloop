@@ -78,7 +78,7 @@ func setupIntegrationTest(t *testing.T, kieaiHandler http.Handler, cdnResultURL 
 	}, 2)
 	t.Cleanup(taskManager.Stop)
 
-	h := NewGeminiHandler(router, registry, issuer, store, taskManager, reqTr, respTr, 10*1024*1024, nil)
+	h := NewGeminiHandler(router, registry, issuer, store, taskManager, reqTr, respTr, 10*1024*1024, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	return mux

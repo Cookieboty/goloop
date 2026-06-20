@@ -118,7 +118,7 @@ func (ch *Channel) Generate(ctx context.Context, req *model.GoogleRequest, model
 	}
 
 	if lastStatus != http.StatusOK {
-		return nil, fmt.Errorf("subrouter: HTTP %d: %s", lastStatus, string(lastBody))
+		return nil, &core.UpstreamStatusError{Status: lastStatus, Body: lastBody}
 	}
 
 	var chatResp ChatResponse
@@ -238,7 +238,7 @@ func (ch *Channel) Stream(ctx context.Context, req *model.GoogleRequest, modelNa
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return fmt.Errorf("subrouter: HTTP %d: %s", resp.StatusCode, string(errBody))
+		return &core.UpstreamStatusError{Status: resp.StatusCode, Body: errBody}
 	}
 
 	// Headers committed — from this point errors are silently dropped.

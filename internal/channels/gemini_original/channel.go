@@ -141,7 +141,7 @@ func (ch *Channel) GenerateRaw(ctx context.Context, rawBody []byte, modelName st
 	}
 
 	if lastStatus != http.StatusOK {
-		return nil, fmt.Errorf("gemini: HTTP %d: %s", lastStatus, string(lastBody))
+		return nil, &core.UpstreamStatusError{Status: lastStatus, Body: lastBody}
 	}
 
 	success = true
@@ -223,7 +223,7 @@ func (ch *Channel) StreamRaw(ctx context.Context, rawBody []byte, modelName stri
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return fmt.Errorf("gemini: HTTP %d: %s", resp.StatusCode, string(body))
+		return &core.UpstreamStatusError{Status: resp.StatusCode, Body: body}
 	}
 
 	// Mirror upstream response headers to the client.
