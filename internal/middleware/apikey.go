@@ -75,11 +75,17 @@ func (m *APIKeyMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// Check channel restriction
+	// Check channel restriction (single-channel binding, legacy field)
 	if apiKeyInfo.ChannelRestriction != nil && *apiKeyInfo.ChannelRestriction != "" {
 		ctx = core.WithChannelRestriction(ctx, *apiKeyInfo.ChannelRestriction)
 	}
-	
+
+	// Apply group-based channel allow list, if any.
+	// 单渠道限制（ChannelRestriction）优先级高于分组白名单，二者兼容共存。
+	if len(apiKeyInfo.GroupChannelNames) > 0 {
+		ctx = core.WithChannelAllowList(ctx, apiKeyInfo.GroupChannelNames)
+	}
+
 	// Add API Key ID to context for usage logging
 	ctx = WithAPIKeyID(ctx, apiKeyInfo.ID)
 	
@@ -114,6 +120,17 @@ func (m *APIKeyMiddleware) verifyAPIKey(ctx context.Context, key string) (*cache
 		Enabled:            dbAPIKey.Enabled,
 		ExpiresAt:          dbAPIKey.ExpiresAt,
 		ChannelRestriction: dbAPIKey.ChannelRestriction,
+		GroupID:            dbAPIKey.GroupID,
+	}
+
+	// 如果绑定了分组，解析出渠道名称列表（白名单）
+	if dbAPIKey.GroupID != nil {
+		names, gerr := m.repo.GetChannelNamesByGroupID(*dbAPIKey.GroupID)
+		if gerr != nil {
+			slog.Warn("failed to resolve group channels", "group_id", *dbAPIKey.GroupID, "err", gerr)
+		} else {
+			apiKeyInfo.GroupChannelNames = names
+		}
 	}
 	
 	// Write to cache

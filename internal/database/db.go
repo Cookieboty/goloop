@@ -23,6 +23,7 @@ func NewDB(databaseURL string) (*gorm.DB, error) {
 		&Channel{},
 		&Account{},
 		&ModelMapping{},
+		&ChannelGroup{},
 		&APIKey{},
 		&UsageLog{},
 	); err != nil {

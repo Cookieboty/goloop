@@ -15,6 +15,10 @@ type APIKeyInfo struct {
 	Enabled            bool
 	ExpiresAt          *time.Time
 	ChannelRestriction *string
+	GroupID            *uint
+	// GroupChannelNames 是分组解析后的渠道名称列表（白名单），
+	// 在中间件读取缓存或回源数据库时填充，用于路由层过滤。
+	GroupChannelNames []string
 }
 
 // APIKeyCache API Key 缓存层

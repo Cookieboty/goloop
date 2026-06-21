@@ -15,6 +15,7 @@ func (r *Repository) InitDB() error {
 		&Channel{},
 		&Account{},
 		&ModelMapping{},
+		&ChannelGroup{},
 		&APIKey{},
 		&UsageLog{},
 	); err != nil {
@@ -131,6 +132,9 @@ func (r *Repository) HealthCheck() error {
 	}
 	if !r.db.Migrator().HasTable(&ModelMapping{}) {
 		return fmt.Errorf("model_mapping table does not exist")
+	}
+	if !r.db.Migrator().HasTable(&ChannelGroup{}) {
+		return fmt.Errorf("channel_group table does not exist")
 	}
 	if !r.db.Migrator().HasTable(&APIKey{}) {
 		return fmt.Errorf("api_key table does not exist")

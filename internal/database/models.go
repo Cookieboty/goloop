@@ -55,7 +55,8 @@ type APIKey struct {
 	ID                 uint       `gorm:"primaryKey" json:"id"`
 	Key                string     `gorm:"uniqueIndex;size:64;not null" json:"key"` // goloop_ + 32字符随机串
 	Name               string     `gorm:"not null" json:"name"`
-	ChannelRestriction *string    `json:"channel_restriction,omitempty"` // 限制的渠道名称，NULL 表示不限制
+	ChannelRestriction *string    `json:"channel_restriction,omitempty"` // 限制的渠道名称，NULL 表示不限制（单渠道兼容字段）
+	GroupID            *uint      `gorm:"index" json:"group_id,omitempty"` // 关联的渠道分组 ID，NULL 表示不绑定分组
 	Enabled            bool       `gorm:"default:true" json:"enabled"`
 	ExpiresAt          *time.Time `json:"expires_at,omitempty"` // 过期时间，NULL 表示永不过期
 	LastUsedAt         *time.Time `json:"last_used_at,omitempty"`
@@ -65,7 +66,26 @@ type APIKey struct {
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 	
-	UsageLogs []UsageLog `gorm:"foreignKey:APIKeyID;constraint:OnDelete:CASCADE" json:"-"`
+	Group     *ChannelGroup `gorm:"foreignKey:GroupID" json:"group,omitempty"`
+	UsageLogs []UsageLog    `gorm:"foreignKey:APIKeyID;constraint:OnDelete:CASCADE" json:"-"`
+}
+
+// ChannelGroup 渠道分组：一个令牌可绑定一个分组，从而约束到一组渠道
+type ChannelGroup struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	Name        string    `gorm:"uniqueIndex;not null" json:"name"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+
+	// 多对多：分组 <-> 渠道
+	Channels []Channel `gorm:"many2many:group_channels;constraint:OnDelete:CASCADE" json:"channels,omitempty"`
+}
+
+// GroupChannel 分组-渠道关联表（由 GORM 自动维护，此处显式声明以便添加索引）
+type GroupChannel struct {
+	ChannelGroupID uint `gorm:"primaryKey" json:"channel_group_id"`
+	ChannelID      uint `gorm:"primaryKey" json:"channel_id"`
 }
 
 // UsageLog API Key 使用记录表（仅保留 30 天）

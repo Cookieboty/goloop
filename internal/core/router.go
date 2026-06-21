@@ -13,6 +13,7 @@ import (
 type routerContextKey string
 
 const ChannelRestrictionKey routerContextKey = "channel_restriction"
+const ChannelAllowListKey routerContextKey = "channel_allow_list"
 
 // WithChannelRestriction returns a context that restricts routing to a specific channel.
 func WithChannelRestriction(ctx context.Context, channelName string) context.Context {
@@ -23,6 +24,40 @@ func WithChannelRestriction(ctx context.Context, channelName string) context.Con
 func ChannelRestrictionFromContext(ctx context.Context) (string, bool) {
 	v, ok := ctx.Value(ChannelRestrictionKey).(string)
 	return v, ok && v != ""
+}
+
+// WithChannelAllowList returns a context that restricts routing to a whitelist
+// of channel names (e.g., resolved from an API key's group binding).
+// An empty list is treated as "no restriction" by the helper below.
+func WithChannelAllowList(ctx context.Context, names []string) context.Context {
+	if len(names) == 0 {
+		return ctx
+	}
+	// Defensive copy to prevent caller mutation.
+	cp := make([]string, len(names))
+	copy(cp, names)
+	return context.WithValue(ctx, ChannelAllowListKey, cp)
+}
+
+// ChannelAllowListFromContext returns the channel allow list from the context, if any.
+// The second return value is false when no allow list is set.
+func ChannelAllowListFromContext(ctx context.Context) ([]string, bool) {
+	v, ok := ctx.Value(ChannelAllowListKey).([]string)
+	return v, ok && len(v) > 0
+}
+
+// channelInAllowList reports whether the given channel name appears in the allow list.
+// When allow is empty, it returns true (no restriction).
+func channelInAllowList(allow []string, name string) bool {
+	if len(allow) == 0 {
+		return true
+	}
+	for _, n := range allow {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Router selects the best channel using weighted random + health awareness.
@@ -67,16 +102,19 @@ func (f *ChannelTypeFilter) matches(chType string) bool {
 }
 
 // pickLowestWeightFallback returns the single lowest-weight available channel
-// that passes the filter, or nil if none qualifies. Health score is ignored —
-// this is a last-resort pick used when no channel is healthy enough to route
-// to normally.
-func (r *Router) pickLowestWeightFallback(filter *ChannelTypeFilter) Channel {
+// that passes the filter and allow list, or nil if none qualifies. Health
+// score is ignored — this is a last-resort pick used when no channel is
+// healthy enough to route to normally.
+func (r *Router) pickLowestWeightFallback(filter *ChannelTypeFilter, allow []string) Channel {
 	var best Channel
 	for _, ch := range r.reg.List() {
 		if !ch.IsAvailable() {
 			continue
 		}
 		if !filter.matches(ch.Type()) {
+			continue
+		}
+		if !channelInAllowList(allow, ch.Name()) {
 			continue
 		}
 		if best == nil || ch.Weight() < best.Weight() {
@@ -91,6 +129,8 @@ func (r *Router) pickLowestWeightFallback(filter *ChannelTypeFilter) Channel {
 // proportionally less traffic during recovery.
 // Channels with HealthScore < hardStopThreshold or IsAvailable() == false are excluded.
 // If the context carries a JWT channel restriction, only that channel is returned.
+// If the context carries a channel allow list (group binding), only channels in
+// the allow list are considered.
 func (r *Router) RouteWithFallback(ctx context.Context) ([]Channel, error) {
 	// Honor JWT channel restriction if present.
 	if restricted, ok := ChannelRestrictionFromContext(ctx); ok {
@@ -104,10 +144,15 @@ func (r *Router) RouteWithFallback(ctx context.Context) ([]Channel, error) {
 		return []Channel{ch}, nil
 	}
 
+	allow, _ := ChannelAllowListFromContext(ctx)
+
 	all := r.reg.List()
 	var candidates []Channel
 	for _, ch := range all {
 		if !ch.IsAvailable() {
+			continue
+		}
+		if !channelInAllowList(allow, ch.Name()) {
 			continue
 		}
 		if r.health.HealthScore(ch.Name()) < hardStopThreshold {
@@ -121,10 +166,13 @@ func (r *Router) RouteWithFallback(ctx context.Context) ([]Channel, error) {
 		// of 503, route this request to the lowest-weight available channel
 		// (operator-configured last-resort). Health may recover on a later
 		// request; if not, each subsequent request reuses the same fallback.
-		if fallback := r.pickLowestWeightFallback(nil); fallback != nil {
+		if fallback := r.pickLowestWeightFallback(nil, allow); fallback != nil {
 			slog.Warn("router: no healthy channels, using lowest-weight fallback",
 				"channel", fallback.Name(), "weight", fallback.Weight())
 			return []Channel{fallback}, nil
+		}
+		if len(allow) > 0 {
+			return nil, fmt.Errorf("router: no available channels in allow list %v", allow)
 		}
 		return nil, errors.New("router: no available channels")
 	}
@@ -144,6 +192,8 @@ func (r *Router) RouteWithFallback(ctx context.Context) ([]Channel, error) {
 // RouteWithTypeFilter returns all healthy channels filtered by type, sorted by effective weight descending.
 // If filter is nil, behaves like RouteWithFallback (no type filtering).
 // If the context carries a JWT channel restriction, only that channel is returned (ignoring type filter).
+// If the context carries a channel allow list (group binding), only channels in
+// the allow list are considered.
 func (r *Router) RouteWithTypeFilter(ctx context.Context, filter *ChannelTypeFilter) ([]Channel, error) {
 	// Honor JWT channel restriction if present (takes precedence over type filtering).
 	if restricted, ok := ChannelRestrictionFromContext(ctx); ok {
@@ -157,6 +207,8 @@ func (r *Router) RouteWithTypeFilter(ctx context.Context, filter *ChannelTypeFil
 		return []Channel{ch}, nil
 	}
 
+	allow, _ := ChannelAllowListFromContext(ctx)
+
 	all := r.reg.List()
 	var candidates []Channel
 	for _, ch := range all {
@@ -164,6 +216,9 @@ func (r *Router) RouteWithTypeFilter(ctx context.Context, filter *ChannelTypeFil
 			continue
 		}
 		if !filter.matches(ch.Type()) {
+			continue
+		}
+		if !channelInAllowList(allow, ch.Name()) {
 			continue
 		}
 		if r.health.HealthScore(ch.Name()) < hardStopThreshold {
@@ -176,7 +231,7 @@ func (r *Router) RouteWithTypeFilter(ctx context.Context, filter *ChannelTypeFil
 		// Degraded fallback: no channel matching the filter passes
 		// hardStopThreshold. Route to the lowest-weight available channel
 		// matching the filter so the request isn't hard-failed as 503.
-		if fallback := r.pickLowestWeightFallback(filter); fallback != nil {
+		if fallback := r.pickLowestWeightFallback(filter, allow); fallback != nil {
 			args := []any{
 				"channel", fallback.Name(),
 				"weight", fallback.Weight(),
@@ -184,8 +239,14 @@ func (r *Router) RouteWithTypeFilter(ctx context.Context, filter *ChannelTypeFil
 			if filter != nil {
 				args = append(args, "include", filter.Include, "exclude", filter.Exclude)
 			}
+			if len(allow) > 0 {
+				args = append(args, "allow_list", allow)
+			}
 			slog.Warn("router: no healthy channels matching filter, using lowest-weight fallback", args...)
 			return []Channel{fallback}, nil
+		}
+		if len(allow) > 0 {
+			return nil, fmt.Errorf("router: no available channels matching filter in allow list %v", allow)
 		}
 		return nil, errors.New("router: no available channels matching filter")
 	}

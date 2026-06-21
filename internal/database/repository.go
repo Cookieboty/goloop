@@ -220,14 +220,14 @@ func (r *Repository) GetAPIKeyByKey(key string) (*APIKey, error) {
 // GetAllAPIKeys 获取所有 API Key
 func (r *Repository) GetAllAPIKeys() ([]APIKey, error) {
 	var apiKeys []APIKey
-	err := r.db.Find(&apiKeys).Error
+	err := r.db.Preload("Group").Find(&apiKeys).Error
 	return apiKeys, err
 }
 
 // GetAPIKeyByID 根据 ID 获取 API Key
 func (r *Repository) GetAPIKeyByID(id uint) (*APIKey, error) {
 	var apiKey APIKey
-	err := r.db.First(&apiKey, id).Error
+	err := r.db.Preload("Group.Channels").First(&apiKey, id).Error
 	return &apiKey, err
 }
 
@@ -244,6 +244,97 @@ func (r *Repository) DeleteAPIKey(id uint) error {
 // ToggleAPIKey 启用/禁用 API Key
 func (r *Repository) ToggleAPIKey(id uint, enabled bool) error {
 	return r.db.Model(&APIKey{}).Where("id = ?", id).Update("enabled", enabled).Error
+}
+
+// ==================== ChannelGroup CRUD ====================
+
+// GetAllChannelGroups 获取所有渠道分组（含渠道）
+func (r *Repository) GetAllChannelGroups() ([]ChannelGroup, error) {
+	var groups []ChannelGroup
+	err := r.db.Preload("Channels").Order("id ASC").Find(&groups).Error
+	return groups, err
+}
+
+// GetChannelGroupByID 根据 ID 获取分组（含渠道）
+func (r *Repository) GetChannelGroupByID(id uint) (*ChannelGroup, error) {
+	var group ChannelGroup
+	err := r.db.Preload("Channels").First(&group, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &group, nil
+}
+
+// GetChannelNamesByGroupID 获取分组绑定的所有渠道名称
+func (r *Repository) GetChannelNamesByGroupID(id uint) ([]string, error) {
+	var names []string
+	err := r.db.Table("channels").
+		Joins("INNER JOIN group_channels ON group_channels.channel_id = channels.id").
+		Where("group_channels.channel_group_id = ?", id).
+		Pluck("channels.name", &names).Error
+	return names, err
+}
+
+// CreateChannelGroup 创建分组并关联渠道
+func (r *Repository) CreateChannelGroup(group *ChannelGroup, channelIDs []uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(group).Error; err != nil {
+			return fmt.Errorf("failed to create group: %w", err)
+		}
+		if len(channelIDs) > 0 {
+			var channels []Channel
+			if err := tx.Where("id IN ?", channelIDs).Find(&channels).Error; err != nil {
+				return fmt.Errorf("failed to load channels: %w", err)
+			}
+			if err := tx.Model(group).Association("Channels").Replace(channels); err != nil {
+				return fmt.Errorf("failed to associate channels: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+// UpdateChannelGroup 更新分组基本信息及关联渠道
+func (r *Repository) UpdateChannelGroup(group *ChannelGroup, channelIDs []uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&ChannelGroup{}).Where("id = ?", group.ID).
+			Updates(map[string]interface{}{
+				"name":        group.Name,
+				"description": group.Description,
+			}).Error; err != nil {
+			return fmt.Errorf("failed to update group: %w", err)
+		}
+		var channels []Channel
+		if len(channelIDs) > 0 {
+			if err := tx.Where("id IN ?", channelIDs).Find(&channels).Error; err != nil {
+				return fmt.Errorf("failed to load channels: %w", err)
+			}
+		}
+		if err := tx.Model(group).Association("Channels").Replace(channels); err != nil {
+			return fmt.Errorf("failed to update channel associations: %w", err)
+		}
+		return nil
+	})
+}
+
+// DeleteChannelGroup 删除分组（同时解除关联，使用该分组的 APIKey 会被设为 NULL）
+func (r *Repository) DeleteChannelGroup(id uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		// 1. 将关联到该分组的 APIKey 解绑
+		if err := tx.Model(&APIKey{}).Where("group_id = ?", id).
+			Update("group_id", nil).Error; err != nil {
+			return fmt.Errorf("failed to unlink api keys: %w", err)
+		}
+		// 2. 清理关联表
+		if err := tx.Where("channel_group_id = ?", id).Delete(&GroupChannel{}).Error; err != nil {
+			return fmt.Errorf("failed to clear group channels: %w", err)
+		}
+		// 3. 删除分组
+		if err := tx.Delete(&ChannelGroup{}, id).Error; err != nil {
+			return fmt.Errorf("failed to delete group: %w", err)
+		}
+		return nil
+	})
 }
 
 // ==================== UsageLog 批量操作 ====================

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { api } from "@/lib/api";
-import type { APIKey, CreateAPIKeyRequest, Channel } from "@/lib/types";
+import type { APIKey, CreateAPIKeyRequest, Channel, ChannelGroup } from "@/lib/types";
 import { PageTitle } from "@/components/PageTitle";
 import { useDialog } from "@/components/Dialog";
 
@@ -14,6 +14,7 @@ export default function APIKeysPage() {
   const dialog = useDialog();
   const [apiKeys, setAPIKeys] = useState<APIKey[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [groups, setGroups] = useState<ChannelGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingKey, setEditingKey] = useState<APIKey | null>(null);
@@ -26,12 +27,14 @@ export default function APIKeysPage() {
   async function loadData() {
     try {
       setLoading(true);
-      const [keysData, channelsData] = await Promise.all([
+      const [keysData, channelsData, groupsData] = await Promise.all([
         api.getAPIKeys(),
-        api.getChannels()
+        api.getChannels(),
+        api.getChannelGroups().catch(() => [] as ChannelGroup[]),
       ]);
       setAPIKeys(keysData);
       setChannels(channelsData);
+      setGroups(groupsData);
     } catch (err: any) {
       await dialog.alert("加载失败：" + err.message, "错误");
     } finally {
@@ -61,15 +64,28 @@ export default function APIKeysPage() {
 
   // 根据渠道限制确定大类
   function getChannelCategory(key: APIKey): string {
+    // 优先使用分组判定
+    if (key.group_id) {
+      const group = groups.find((g) => g.id === key.group_id);
+      if (group && group.channels && group.channels.length > 0) {
+        const hasGemini = group.channels.some((ch) => (ch.type || "").startsWith("gemini"));
+        const hasOpenAI = group.channels.some((ch) => !(ch.type || "").startsWith("gemini"));
+        if (hasGemini && !hasOpenAI) return "Gemini";
+        if (hasOpenAI && !hasGemini) return "OpenAI";
+        return "混合分组";
+      }
+      return "分组";
+    }
+
     if (!key.channel_restriction) {
       return "全部渠道";
     }
-    
+
     const channel = channels.find(ch => ch.name === key.channel_restriction);
     if (channel) {
       return channel.type.startsWith('gemini') ? 'Gemini' : 'OpenAI';
     }
-    
+
     // 如果找不到渠道，根据名称判断
     const restriction = key.channel_restriction.toLowerCase();
     if (restriction.includes('gemini')) return 'Gemini';
@@ -178,7 +194,7 @@ export default function APIKeysPage() {
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider w-16">状态</th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">名称</th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">API Key</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">渠道限制</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">渠道限制 / 分组</th>
                           <th className="px-4 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider w-24">总请求</th>
                           <th className="px-4 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider w-20">成功</th>
                           <th className="px-4 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider w-20">失败</th>
@@ -191,10 +207,9 @@ export default function APIKeysPage() {
                           return (
                             <tr key={key.id} className="hover:bg-gray-800/40 transition-colors">
                               <td className="px-4 py-3">
-                                <div className={`w-2 h-2 rounded-full ${
-                                  isExpired ? 'bg-red-400' :
+                                <div className={`w-2 h-2 rounded-full ${isExpired ? 'bg-red-400' :
                                   key.enabled ? 'bg-green-400 animate-pulse shadow-lg shadow-green-400/50' : 'bg-gray-500'
-                                }`}></div>
+                                  }`}></div>
                               </td>
                               <td className="px-4 py-3">
                                 <div>
@@ -226,7 +241,31 @@ export default function APIKeysPage() {
                                 )}
                               </td>
                               <td className="px-4 py-3">
-                                {key.channel_restriction ? (
+                                {key.group_id ? (
+                                  (() => {
+                                    const g = groups.find((gg) => gg.id === key.group_id);
+                                    return (
+                                      <div>
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-5.13a4 4 0 11-8 0 4 4 0 018 0zm6 0a4 4 0 11-8 0 4 4 0 018 0z" />
+                                          </svg>
+                                          分组：{g ? g.name : `#${key.group_id}`}
+                                        </span>
+                                        {g?.channels && g.channels.length > 0 && (
+                                          <p className="text-xs text-gray-500 mt-1 max-w-xs truncate">
+                                            {g.channels.map((c) => c.name).join(", ")}
+                                          </p>
+                                        )}
+                                        {key.expires_at && (
+                                          <p className="text-xs text-gray-500 mt-0.5">
+                                            过期: {new Date(key.expires_at).toLocaleDateString("zh-CN")}
+                                          </p>
+                                        )}
+                                      </div>
+                                    );
+                                  })()
+                                ) : key.channel_restriction ? (
                                   <div>
                                     <p className="text-sm text-gray-300">{key.channel_restriction}</p>
                                     {key.expires_at && (
@@ -273,11 +312,10 @@ export default function APIKeysPage() {
                                   </button>
                                   <button
                                     onClick={() => handleToggle(key.id, !key.enabled)}
-                                    className={`p-1.5 rounded-lg transition-all duration-200 ${
-                                      key.enabled
-                                        ? 'text-yellow-400 hover:bg-yellow-500/10'
-                                        : 'text-green-400 hover:bg-green-500/10'
-                                    }`}
+                                    className={`p-1.5 rounded-lg transition-all duration-200 ${key.enabled
+                                      ? 'text-yellow-400 hover:bg-yellow-500/10'
+                                      : 'text-green-400 hover:bg-green-500/10'
+                                      }`}
                                     title={key.enabled ? '禁用' : '启用'}
                                   >
                                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -318,6 +356,14 @@ export default function APIKeysPage() {
       {showForm && (
         <APIKeyForm
           apiKey={editingKey}
+          channels={channels}
+          groups={groups}
+          onGroupsChanged={async () => {
+            try {
+              const gs = await api.getChannelGroups();
+              setGroups(gs);
+            } catch { }
+          }}
           onClose={() => {
             setShowForm(false);
             setEditingKey(null);
@@ -337,55 +383,73 @@ export default function APIKeysPage() {
   );
 }
 
-function APIKeyForm({ 
-  apiKey, 
-  onClose, 
-  onSave 
-}: { 
+function APIKeyForm({
+  apiKey,
+  channels,
+  groups,
+  onGroupsChanged,
+  onClose,
+  onSave
+}: {
   apiKey: APIKey | null;
-  onClose: () => void; 
+  channels: Channel[];
+  groups: ChannelGroup[];
+  onGroupsChanged: () => void | Promise<void>;
+  onClose: () => void;
   onSave: () => void;
 }) {
   const dialog = useDialog();
-  const [channels, setChannels] = useState<Channel[]>([]);
+  type RestrictionMode = "all" | "channel" | "group";
+  const initialMode: RestrictionMode = apiKey?.group_id
+    ? "group"
+    : apiKey?.channel_restriction
+      ? "channel"
+      : "all";
+  const [mode, setMode] = useState<RestrictionMode>(initialMode);
   const [formData, setFormData] = useState<CreateAPIKeyRequest & { enabled?: boolean }>({
     name: apiKey?.name || "",
     channel_restriction: apiKey?.channel_restriction || undefined,
+    group_id: apiKey?.group_id || undefined,
     expires_at: apiKey?.expires_at || undefined,
     enabled: apiKey?.enabled ?? true,
   });
   const [saving, setSaving] = useState(false);
   const [createdKey, setCreatedKey] = useState<string | null>(null);
+  const [showGroupManager, setShowGroupManager] = useState(false);
 
-  useEffect(() => {
-    loadChannels();
-  }, []);
-
-  async function loadChannels() {
-    try {
-      const data = await api.getChannels();
-      setChannels(data);
-    } catch (err: any) {
-      console.error("Failed to load channels:", err);
-    }
+  function switchMode(next: RestrictionMode) {
+    setMode(next);
+    setFormData((prev) => ({
+      ...prev,
+      channel_restriction: next === "channel" ? prev.channel_restriction : undefined,
+      group_id: next === "group" ? prev.group_id : undefined,
+    }));
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (mode === "group" && !formData.group_id) {
+      await dialog.alert("请选择一个分组，或切换约束方式", "提示");
+      return;
+    }
     setSaving(true);
     try {
+      const payload: CreateAPIKeyRequest = {
+        name: formData.name,
+        channel_restriction: mode === "channel" ? formData.channel_restriction : undefined,
+        group_id: mode === "group" ? formData.group_id : undefined,
+        expires_at: formData.expires_at,
+      };
       if (apiKey) {
         // 编辑模式
         await api.updateAPIKey(apiKey.id, {
-          name: formData.name,
-          channel_restriction: formData.channel_restriction,
-          expires_at: formData.expires_at,
+          ...payload,
           enabled: formData.enabled ?? true,
         });
         onSave();
       } else {
         // 创建模式
-        const result = await api.createAPIKey(formData);
+        const result = await api.createAPIKey(payload);
         setCreatedKey(result.key);
       }
     } catch (err: any) {
@@ -479,27 +543,135 @@ function APIKeyForm({
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">渠道限制（可选）</label>
-            <select
-              value={formData.channel_restriction || ""}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  channel_restriction: e.target.value || undefined,
-                })
-              }
-              className="w-full px-4 py-2.5 bg-gray-900/50 border border-gray-700 rounded-lg text-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all outline-none"
-            >
-              <option value="">不限制（全部渠道）</option>
-              {channels.map((ch) => (
-                <option key={ch.id} value={ch.name}>
-                  {ch.name} ({ch.type})
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-gray-400 mt-1.5">
-              指定此 API Key 只能访问特定渠道
-            </p>
+            <label className="block text-sm font-medium text-gray-300 mb-2">渠道约束方式</label>
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              <button
+                type="button"
+                onClick={() => switchMode("all")}
+                className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${mode === "all"
+                  ? "bg-purple-500/15 border-purple-500/40 text-purple-200"
+                  : "bg-gray-900/40 border-gray-700 text-gray-400 hover:text-gray-200"
+                  }`}
+              >
+                不限制
+              </button>
+              <button
+                type="button"
+                onClick={() => switchMode("channel")}
+                className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${mode === "channel"
+                  ? "bg-blue-500/15 border-blue-500/40 text-blue-200"
+                  : "bg-gray-900/40 border-gray-700 text-gray-400 hover:text-gray-200"
+                  }`}
+              >
+                单渠道
+              </button>
+              <button
+                type="button"
+                onClick={() => switchMode("group")}
+                className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${mode === "group"
+                  ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-200"
+                  : "bg-gray-900/40 border-gray-700 text-gray-400 hover:text-gray-200"
+                  }`}
+              >
+                分组（多渠道）
+              </button>
+            </div>
+
+            {mode === "channel" && (
+              <>
+                <select
+                  value={formData.channel_restriction || ""}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      channel_restriction: e.target.value || undefined,
+                    })
+                  }
+                  className="w-full px-4 py-2.5 bg-gray-900/50 border border-gray-700 rounded-lg text-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all outline-none"
+                >
+                  <option value="">请选择单个渠道</option>
+                  {channels.map((ch) => (
+                    <option key={ch.id} value={ch.name}>
+                      {ch.name} ({ch.type})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-400 mt-1.5">
+                  指定此 API Key 只能访问该单个渠道（兼容旧字段 channel_restriction）
+                </p>
+              </>
+            )}
+
+            {mode === "group" && (
+              <>
+                <div className="flex gap-2">
+                  <select
+                    value={formData.group_id ?? ""}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        group_id: e.target.value ? Number(e.target.value) : undefined,
+                      })
+                    }
+                    className="flex-1 px-4 py-2.5 bg-gray-900/50 border border-gray-700 rounded-lg text-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all outline-none"
+                  >
+                    <option value="">请选择分组</option>
+                    {groups.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name}
+                        {g.channels && g.channels.length > 0
+                          ? `（${g.channels.length} 渠道）`
+                          : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setShowGroupManager(true)}
+                    className="px-3 py-2.5 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-200 rounded-lg text-sm font-medium transition-all whitespace-nowrap"
+                  >
+                    新建 / 管理分组
+                  </button>
+                </div>
+                {formData.group_id ? (
+                  (() => {
+                    const g = groups.find((gg) => gg.id === formData.group_id);
+                    if (!g) return null;
+                    return (
+                      <div className="mt-2 p-3 bg-gray-900/40 border border-gray-700/60 rounded-lg">
+                        <p className="text-xs text-gray-400 mb-1">该分组包含渠道：</p>
+                        {g.channels && g.channels.length > 0 ? (
+                          <div className="flex flex-wrap gap-1.5">
+                            {g.channels.map((c) => (
+                              <span
+                                key={c.id}
+                                className="inline-flex items-center px-2 py-0.5 rounded text-xs bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
+                              >
+                                {c.name}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-yellow-400">
+                            分组内尚未绑定任何渠道，请先在分组管理中添加渠道。
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <p className="text-xs text-gray-400 mt-1.5">
+                    选择一个分组后，此 API Key 仅能访问该分组下的所有渠道。
+                  </p>
+                )}
+              </>
+            )}
+
+            {mode === "all" && (
+              <p className="text-xs text-gray-400 mt-1.5">
+                不限制：此 API Key 可访问所有已启用渠道。
+              </p>
+            )}
           </div>
 
           <div>
@@ -577,6 +749,257 @@ function APIKeyForm({
           </div>
         </form>
       </div>
+
+      {showGroupManager && (
+        <ChannelGroupManager
+          channels={channels}
+          groups={groups}
+          onClose={() => setShowGroupManager(false)}
+          onChanged={async () => {
+            await onGroupsChanged();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ChannelGroupManager({
+  channels,
+  groups,
+  onClose,
+  onChanged,
+}: {
+  channels: Channel[];
+  groups: ChannelGroup[];
+  onClose: () => void;
+  onChanged: () => void | Promise<void>;
+}) {
+  const dialog = useDialog();
+  const [editing, setEditing] = useState<ChannelGroup | null>(null);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [selectedChannelIds, setSelectedChannelIds] = useState<number[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  function resetForm() {
+    setEditing(null);
+    setName("");
+    setDescription("");
+    setSelectedChannelIds([]);
+  }
+
+  function startEdit(g: ChannelGroup) {
+    setEditing(g);
+    setName(g.name);
+    setDescription(g.description || "");
+    setSelectedChannelIds((g.channels || []).map((c) => c.id));
+  }
+
+  function toggleChannel(id: number) {
+    setSelectedChannelIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) {
+      await dialog.alert("请输入分组名称", "提示");
+      return;
+    }
+    setSaving(true);
+    try {
+      if (editing) {
+        await api.updateChannelGroup(editing.id, {
+          name: name.trim(),
+          description: description.trim() || undefined,
+          channel_ids: selectedChannelIds,
+        });
+      } else {
+        await api.createChannelGroup({
+          name: name.trim(),
+          description: description.trim() || undefined,
+          channel_ids: selectedChannelIds,
+        });
+      }
+      resetForm();
+      await onChanged();
+    } catch (err: any) {
+      await dialog.alert("保存失败：" + err.message, "错误");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(g: ChannelGroup) {
+    const ok = await dialog.confirm(
+      `确定删除分组「${g.name}」吗？引用此分组的 API Key 将自动解绑。`,
+      "确认删除",
+      true
+    );
+    if (!ok) return;
+    try {
+      await api.deleteChannelGroup(g.id);
+      if (editing?.id === g.id) resetForm();
+      await onChanged();
+    } catch (err: any) {
+      await dialog.alert("删除失败：" + err.message, "错误");
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-[60] overflow-y-auto p-4">
+      <div className="bg-gradient-to-br from-gray-800/95 to-gray-900/95 backdrop-blur-md rounded-2xl border border-gray-700/50 shadow-2xl max-w-3xl w-full">
+        <div className="px-6 py-5 border-b border-gray-700/50 flex justify-between items-center">
+          <div>
+            <h2 className="text-xl font-bold text-white">分组管理</h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              一个分组对应多个渠道；令牌绑定分组后，仅可访问分组内的渠道。
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-gray-700/50 rounded-lg transition-colors"
+          >
+            <svg className="w-5 h-5 text-gray-400 hover:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-0">
+          {/* 左：已有分组列表 */}
+          <div className="p-5 border-b md:border-b-0 md:border-r border-gray-700/50 max-h-[60vh] overflow-y-auto">
+            <h3 className="text-sm font-semibold text-gray-300 mb-3">已有分组</h3>
+            {groups.length === 0 ? (
+              <p className="text-xs text-gray-500">暂无分组，请在右侧创建。</p>
+            ) : (
+              <ul className="space-y-2">
+                {groups.map((g) => (
+                  <li
+                    key={g.id}
+                    className={`p-3 rounded-lg border transition-all ${editing?.id === g.id
+                      ? "bg-emerald-500/10 border-emerald-500/40"
+                      : "bg-gray-900/40 border-gray-700/60 hover:border-gray-600"
+                      }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-white truncate">{g.name}</p>
+                        {g.description && (
+                          <p className="text-xs text-gray-400 mt-0.5 line-clamp-2">{g.description}</p>
+                        )}
+                        <p className="text-xs text-gray-500 mt-1">
+                          渠道数：{g.channels?.length ?? 0}
+                        </p>
+                      </div>
+                      <div className="flex gap-1 flex-shrink-0">
+                        <button
+                          onClick={() => startEdit(g)}
+                          className="px-2 py-1 text-xs rounded bg-blue-500/15 text-blue-300 hover:bg-blue-500/25"
+                        >
+                          编辑
+                        </button>
+                        <button
+                          onClick={() => handleDelete(g)}
+                          className="px-2 py-1 text-xs rounded bg-red-500/15 text-red-300 hover:bg-red-500/25"
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* 右：新建/编辑表单 */}
+          <form onSubmit={handleSave} className="p-5 space-y-3 max-h-[60vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-gray-300">
+                {editing ? `编辑分组 #${editing.id}` : "新建分组"}
+              </h3>
+              {editing && (
+                <button
+                  type="button"
+                  onClick={resetForm}
+                  className="text-xs text-gray-400 hover:text-white"
+                >
+                  + 新建
+                </button>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">名称 *</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="例如：图像生成组"
+                className="w-full px-3 py-2 bg-gray-900/50 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-emerald-500 outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">描述</label>
+              <input
+                type="text"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="可选"
+                className="w-full px-3 py-2 bg-gray-900/50 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-emerald-500 outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                选择渠道（{selectedChannelIds.length} 已选）
+              </label>
+              <div className="border border-gray-700 rounded-lg p-2 max-h-56 overflow-y-auto bg-gray-900/40 space-y-1">
+                {channels.length === 0 ? (
+                  <p className="text-xs text-gray-500 p-2">暂无可用渠道</p>
+                ) : (
+                  channels.map((ch) => (
+                    <label
+                      key={ch.id}
+                      className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-800/60 cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedChannelIds.includes(ch.id)}
+                        onChange={() => toggleChannel(ch.id)}
+                        className="w-4 h-4 rounded border-gray-700 bg-gray-900/50 text-emerald-500 focus:ring-emerald-500/20"
+                      />
+                      <span className="text-sm text-gray-200">{ch.name}</span>
+                      <span className="text-xs text-gray-500">({ch.type})</span>
+                    </label>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end gap-2">
+              {editing && (
+                <button
+                  type="button"
+                  onClick={resetForm}
+                  className="px-3 py-1.5 text-sm rounded bg-gray-700/50 hover:bg-gray-700 text-gray-300"
+                >
+                  取消编辑
+                </button>
+              )}
+              <button
+                type="submit"
+                disabled={saving}
+                className="px-4 py-1.5 text-sm rounded bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50"
+              >
+                {saving ? "保存中..." : editing ? "更新" : "创建"}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
     </div>
   );
 }
@@ -598,11 +1021,11 @@ function UsageLogsModal({ keyId, onClose }: { keyId: number; onClose: () => void
     try {
       setLoading(true);
       const data = await api.getUsageLogs(keyId, 500);
-      
+
       // 根据时间范围筛选
       const now = new Date();
       let filteredLogs = data;
-      
+
       if (timeRange === "today") {
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
@@ -617,7 +1040,7 @@ function UsageLogsModal({ keyId, onClose }: { keyId: number; onClose: () => void
         const startTime = new Date(now.getTime() - hours * 60 * 60 * 1000);
         filteredLogs = data.filter((log: any) => new Date(log.created_at) >= startTime);
       }
-      
+
       setLogs(filteredLogs);
     } catch (err: any) {
       await dialog.alert("加载日志失败：" + err.message, "错误");
@@ -628,11 +1051,11 @@ function UsageLogsModal({ keyId, onClose }: { keyId: number; onClose: () => void
 
   return (
     <>
-      <div 
+      <div
         className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 animate-in fade-in duration-200"
         onClick={onClose}
       >
-        <div 
+        <div
           className="fixed right-0 top-0 h-full w-full max-w-4xl bg-gradient-to-br from-gray-800/95 to-gray-900/95 backdrop-blur-md shadow-2xl border-l border-gray-700/50 animate-in slide-in-from-right duration-300 flex flex-col"
           onClick={(e) => e.stopPropagation()}
         >
@@ -666,51 +1089,46 @@ function UsageLogsModal({ keyId, onClose }: { keyId: number; onClose: () => void
             <div className="mt-4 flex flex-wrap gap-2">
               <button
                 onClick={() => setTimeRange("today")}
-                className={`px-3 py-1.5 rounded-lg text-sm transition-all ${
-                  timeRange === "today"
-                    ? "bg-blue-500 text-white"
-                    : "bg-gray-700/50 text-gray-300 hover:bg-gray-700"
-                }`}
+                className={`px-3 py-1.5 rounded-lg text-sm transition-all ${timeRange === "today"
+                  ? "bg-blue-500 text-white"
+                  : "bg-gray-700/50 text-gray-300 hover:bg-gray-700"
+                  }`}
               >
                 今天
               </button>
               <button
                 onClick={() => setTimeRange("1h")}
-                className={`px-3 py-1.5 rounded-lg text-sm transition-all ${
-                  timeRange === "1h"
-                    ? "bg-blue-500 text-white"
-                    : "bg-gray-700/50 text-gray-300 hover:bg-gray-700"
-                }`}
+                className={`px-3 py-1.5 rounded-lg text-sm transition-all ${timeRange === "1h"
+                  ? "bg-blue-500 text-white"
+                  : "bg-gray-700/50 text-gray-300 hover:bg-gray-700"
+                  }`}
               >
                 最近 1 小时
               </button>
               <button
                 onClick={() => setTimeRange("24h")}
-                className={`px-3 py-1.5 rounded-lg text-sm transition-all ${
-                  timeRange === "24h"
-                    ? "bg-blue-500 text-white"
-                    : "bg-gray-700/50 text-gray-300 hover:bg-gray-700"
-                }`}
+                className={`px-3 py-1.5 rounded-lg text-sm transition-all ${timeRange === "24h"
+                  ? "bg-blue-500 text-white"
+                  : "bg-gray-700/50 text-gray-300 hover:bg-gray-700"
+                  }`}
               >
                 最近 24 小时
               </button>
               <button
                 onClick={() => setTimeRange("7d")}
-                className={`px-3 py-1.5 rounded-lg text-sm transition-all ${
-                  timeRange === "7d"
-                    ? "bg-blue-500 text-white"
-                    : "bg-gray-700/50 text-gray-300 hover:bg-gray-700"
-                }`}
+                className={`px-3 py-1.5 rounded-lg text-sm transition-all ${timeRange === "7d"
+                  ? "bg-blue-500 text-white"
+                  : "bg-gray-700/50 text-gray-300 hover:bg-gray-700"
+                  }`}
               >
                 最近 7 天
               </button>
               <button
                 onClick={() => setTimeRange("all")}
-                className={`px-3 py-1.5 rounded-lg text-sm transition-all ${
-                  timeRange === "all"
-                    ? "bg-blue-500 text-white"
-                    : "bg-gray-700/50 text-gray-300 hover:bg-gray-700"
-                }`}
+                className={`px-3 py-1.5 rounded-lg text-sm transition-all ${timeRange === "all"
+                  ? "bg-blue-500 text-white"
+                  : "bg-gray-700/50 text-gray-300 hover:bg-gray-700"
+                  }`}
               >
                 全部
               </button>
@@ -751,8 +1169,8 @@ function UsageLogsModal({ keyId, onClose }: { keyId: number; onClose: () => void
                   </thead>
                   <tbody className="divide-y divide-gray-700/30 bg-gray-800/50">
                     {logs.map((log) => (
-                      <tr 
-                        key={log.id} 
+                      <tr
+                        key={log.id}
                         className="hover:bg-gray-800/40 transition-colors cursor-pointer"
                         onClick={() => setSelectedLog(log)}
                       >
@@ -810,11 +1228,11 @@ function UsageLogsModal({ keyId, onClose }: { keyId: number; onClose: () => void
 
       {/* Log Detail Drawer */}
       {selectedLog && (
-        <div 
+        <div
           className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[60] animate-in fade-in duration-200"
           onClick={() => setSelectedLog(null)}
         >
-          <div 
+          <div
             className="fixed right-0 top-0 h-full w-full max-w-2xl bg-gradient-to-br from-gray-800/95 to-gray-900/95 backdrop-blur-md shadow-2xl border-l border-gray-700/50 animate-in slide-in-from-right duration-300 flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
@@ -822,11 +1240,10 @@ function UsageLogsModal({ keyId, onClose }: { keyId: number; onClose: () => void
             <div className="p-6 border-b border-gray-700/50 flex-shrink-0">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                    selectedLog.success 
-                      ? 'bg-green-500/20 border border-green-500/30' 
-                      : 'bg-red-500/20 border border-red-500/30'
-                  }`}>
+                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${selectedLog.success
+                    ? 'bg-green-500/20 border border-green-500/30'
+                    : 'bg-red-500/20 border border-red-500/30'
+                    }`}>
                     <svg className={`w-5 h-5 ${selectedLog.success ? 'text-green-400' : 'text-red-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       {selectedLog.success ? (
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />

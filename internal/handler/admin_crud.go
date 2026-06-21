@@ -72,6 +72,13 @@ func (h *AdminCRUDHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /admin/api/api-keys/{id}", h.requireAuth(h.handleUpdateAPIKey))
 	mux.HandleFunc("DELETE /admin/api/api-keys/{id}", h.requireAuth(h.handleDeleteAPIKey))
 	mux.HandleFunc("POST /admin/api/api-keys/{id}/toggle", h.requireAuth(h.handleToggleAPIKey))
+
+	// Channel Group CRUD
+	mux.HandleFunc("GET /admin/api/channel-groups", h.requireAuth(h.handleGetChannelGroups))
+	mux.HandleFunc("POST /admin/api/channel-groups", h.requireAuth(h.handleCreateChannelGroup))
+	mux.HandleFunc("GET /admin/api/channel-groups/{id}", h.requireAuth(h.handleGetChannelGroup))
+	mux.HandleFunc("PUT /admin/api/channel-groups/{id}", h.requireAuth(h.handleUpdateChannelGroup))
+	mux.HandleFunc("DELETE /admin/api/channel-groups/{id}", h.requireAuth(h.handleDeleteChannelGroup))
 	
 	// Usage Logs
 	mux.HandleFunc("GET /admin/api/api-keys/{id}/logs", h.requireAuth(h.handleGetUsageLogs))
@@ -595,6 +602,7 @@ func (h *AdminCRUDHandler) handleCreateAPIKey(w http.ResponseWriter, r *http.Req
 	var req struct {
 		Name               string     `json:"name"`
 		ChannelRestriction *string    `json:"channel_restriction"`
+		GroupID            *uint      `json:"group_id"`
 		ExpiresAt          *time.Time `json:"expires_at"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -610,6 +618,7 @@ func (h *AdminCRUDHandler) handleCreateAPIKey(w http.ResponseWriter, r *http.Req
 	apiKey := &database.APIKey{
 		Name:               req.Name,
 		ChannelRestriction: req.ChannelRestriction,
+		GroupID:            req.GroupID,
 		ExpiresAt:          req.ExpiresAt,
 		Enabled:            true,
 	}
@@ -632,6 +641,7 @@ func (h *AdminCRUDHandler) handleUpdateAPIKey(w http.ResponseWriter, r *http.Req
 	var req struct {
 		Name               string     `json:"name"`
 		ChannelRestriction *string    `json:"channel_restriction"`
+		GroupID            *uint      `json:"group_id"`
 		ExpiresAt          *time.Time `json:"expires_at"`
 		Enabled            bool       `json:"enabled"`
 	}
@@ -650,6 +660,7 @@ func (h *AdminCRUDHandler) handleUpdateAPIKey(w http.ResponseWriter, r *http.Req
 	// Update fields
 	apiKey.Name = req.Name
 	apiKey.ChannelRestriction = req.ChannelRestriction
+	apiKey.GroupID = req.GroupID
 	apiKey.ExpiresAt = req.ExpiresAt
 	apiKey.Enabled = req.Enabled
 	
@@ -972,6 +983,146 @@ func (h *AdminCRUDHandler) handleGetGlobalStats(w http.ResponseWriter, r *http.R
 		"type_stats":      typeStats,
 		"channel_details": enrichedDetails,
 	})
+}
+
+// ==================== Channel Group CRUD ====================
+
+type channelGroupRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	ChannelIDs  []uint `json:"channel_ids"`
+}
+
+func (h *AdminCRUDHandler) handleGetChannelGroups(w http.ResponseWriter, r *http.Request) {
+	groups, err := h.repo.GetAllChannelGroups()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "failed to get channel groups: "+err.Error())
+		return
+	}
+	writeJSON(w, groups)
+}
+
+func (h *AdminCRUDHandler) handleGetChannelGroup(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r.PathValue("id"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid group ID")
+		return
+	}
+
+	group, err := h.repo.GetChannelGroupByID(id)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "channel group not found")
+		return
+	}
+	writeJSON(w, group)
+}
+
+func (h *AdminCRUDHandler) handleCreateChannelGroup(w http.ResponseWriter, r *http.Request) {
+	var req channelGroupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		writeJSONError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	group := &database.ChannelGroup{
+		Name:        req.Name,
+		Description: req.Description,
+	}
+	if err := h.repo.CreateChannelGroup(group, req.ChannelIDs); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "failed to create channel group: "+err.Error())
+		return
+	}
+
+	// 重新加载分组的关联渠道，返回完整结构
+	if reloaded, err := h.repo.GetChannelGroupByID(group.ID); err == nil {
+		writeJSON(w, reloaded)
+		return
+	}
+	writeJSON(w, group)
+}
+
+func (h *AdminCRUDHandler) handleUpdateChannelGroup(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r.PathValue("id"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid group ID")
+		return
+	}
+
+	var req channelGroupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		writeJSONError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	group, err := h.repo.GetChannelGroupByID(id)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "channel group not found")
+		return
+	}
+	group.Name = req.Name
+	group.Description = req.Description
+
+	if err := h.repo.UpdateChannelGroup(group, req.ChannelIDs); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "failed to update channel group: "+err.Error())
+		return
+	}
+
+	// 分组成员变化时，使用此分组的 APIKey 缓存可能失效，
+	// 这里清理缓存：遍历所有 APIKey，找出 group_id == id 的并清理。
+	if h.cache != nil {
+		if keys, kerr := h.repo.GetAllAPIKeys(); kerr == nil {
+			for _, k := range keys {
+				if k.GroupID != nil && *k.GroupID == id {
+					_ = h.cache.Delete(r.Context(), k.Key)
+				}
+			}
+		}
+	}
+
+	if reloaded, err := h.repo.GetChannelGroupByID(id); err == nil {
+		writeJSON(w, reloaded)
+		return
+	}
+	writeJSON(w, group)
+}
+
+func (h *AdminCRUDHandler) handleDeleteChannelGroup(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r.PathValue("id"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid group ID")
+		return
+	}
+
+	// 先收集使用该分组的 APIKey，删除后清理其缓存（避免拿到陈旧的白名单）
+	var affectedKeys []string
+	if h.cache != nil {
+		if keys, kerr := h.repo.GetAllAPIKeys(); kerr == nil {
+			for _, k := range keys {
+				if k.GroupID != nil && *k.GroupID == id {
+					affectedKeys = append(affectedKeys, k.Key)
+				}
+			}
+		}
+	}
+
+	if err := h.repo.DeleteChannelGroup(id); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "failed to delete channel group: "+err.Error())
+		return
+	}
+
+	for _, k := range affectedKeys {
+		_ = h.cache.Delete(r.Context(), k)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ==================== Helper Functions ====================

@@ -15,6 +15,8 @@ import type {
   CreateAPIKeyRequest,
   APIKeyStatsResponse,
   GlobalStatsResponse,
+  ChannelGroup,
+  CreateChannelGroupRequest,
 } from "./types";
 
 const API_BASE = "";
@@ -100,7 +102,7 @@ export const api = {
   },
 
   // ==================== Channel CRUD ====================
-  
+
   getChannels(): Promise<Channel[]> {
     return request<Channel[]>("/admin/api/channels");
   },
@@ -232,6 +234,36 @@ export const api = {
     });
   },
 
+  // ==================== Channel Group CRUD ====================
+
+  getChannelGroups(): Promise<ChannelGroup[]> {
+    return request<ChannelGroup[]>("/admin/api/channel-groups");
+  },
+
+  getChannelGroup(id: number): Promise<ChannelGroup> {
+    return request<ChannelGroup>(`/admin/api/channel-groups/${id}`);
+  },
+
+  createChannelGroup(body: CreateChannelGroupRequest): Promise<ChannelGroup> {
+    return request<ChannelGroup>("/admin/api/channel-groups", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  updateChannelGroup(id: number, body: CreateChannelGroupRequest): Promise<ChannelGroup> {
+    return request<ChannelGroup>(`/admin/api/channel-groups/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  },
+
+  deleteChannelGroup(id: number): Promise<void> {
+    return request<void>(`/admin/api/channel-groups/${id}`, {
+      method: "DELETE",
+    });
+  },
+
   // ==================== Usage Logs ====================
 
   getUsageLogs(apiKeyId: number, limit?: number, offset?: number): Promise<UsageLog[]> {
@@ -259,7 +291,7 @@ export const api = {
     if (params.offset) searchParams.append("offset", params.offset.toString());
     if (params.start_date) searchParams.append("start_date", params.start_date);
     if (params.end_date) searchParams.append("end_date", params.end_date);
-    
+
     const query = searchParams.toString() ? `?${searchParams.toString()}` : "";
     return request<{ logs: UsageLog[]; total: number }>(`/admin/api/error-logs${query}`);
   },

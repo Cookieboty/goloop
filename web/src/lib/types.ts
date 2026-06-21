@@ -79,12 +79,23 @@ export interface APIKey {
   key: string;
   name: string;
   channel_restriction?: string;
+  group_id?: number;
+  group?: ChannelGroup;
   enabled: boolean;
   expires_at?: string;
   last_used_at?: string;
   total_requests: number;
   total_success: number;
   total_fail: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChannelGroup {
+  id: number;
+  name: string;
+  description: string;
+  channels?: Channel[];
   created_at: string;
   updated_at: string;
 }
@@ -156,7 +167,14 @@ export interface CreateMappingRequest {
 export interface CreateAPIKeyRequest {
   name: string;
   channel_restriction?: string;
+  group_id?: number;
   expires_at?: string;
+}
+
+export interface CreateChannelGroupRequest {
+  name: string;
+  description?: string;
+  channel_ids: number[];
 }
 
 export interface APIKeyStatsResponse {
